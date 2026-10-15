@@ -145,6 +145,58 @@ impl<F: Field + CanonicalEncoding> BalancedDecomposePow2Params<F> {
         self.log_basis
     }
 
+    /// Decompose a small signed ring using its canonical field residues.
+    ///
+    /// Each input magnitude must be smaller than the field modulus. Output
+    /// planes use the same order as field decomposition.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the plane count differs from `levels()` or a digit does not fit
+    /// the output carrier (`i8` or `i16`).
+    #[doc(hidden)]
+    #[allow(private_bounds)]
+    #[inline]
+    pub fn decompose_small_signed_into<T, O, const D: usize>(
+        &self,
+        ring: &[T; D],
+        out: &mut [[O; D]],
+    ) where
+        T: Copy + Into<i64>,
+        O: BalancedSignedDigit,
+    {
+        assert_eq!(
+            out.len(),
+            self.levels,
+            "digit plane count must match levels"
+        );
+        assert!(
+            self.log_basis <= O::MAX_LOG_BASIS,
+            "basis exceeds output carrier"
+        );
+        let mask = ((1u32 << self.log_basis) - 1) as u16;
+        let half_b = (1u32 << (self.log_basis - 1)) as u16;
+        for (coefficient, value) in ring.iter().copied().enumerate() {
+            let value = value.into();
+            let canonical = if value >= 0 {
+                value as u128
+            } else {
+                self.q - u128::from(value.unsigned_abs())
+            };
+            let words = self.biased(canonical);
+            for (level, plane) in out.iter_mut().enumerate() {
+                let shift = level as u32 * self.log_basis;
+                let word = (shift / 64) as usize;
+                let bit = shift % 64;
+                let mut field = words[word] >> bit;
+                if bit + self.log_basis > 64 {
+                    field |= words[word + 1] << (64 - bit);
+                }
+                plane[coefficient] = O::from_biased_field(field as u16, mask, half_b);
+            }
+        }
+    }
+
     /// Low bits of `x + H` that the digits read.
     #[inline]
     fn digit_bits(&self) -> usize {
