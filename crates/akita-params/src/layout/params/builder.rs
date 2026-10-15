@@ -63,6 +63,7 @@ impl CommittedGroupParams {
                     ),
                 },
                 opening: GroupOpeningPlan {
+                    source_view: crate::SourceOpeningView::Decoded,
                     opening_method: OpeningMethod::EvaluationTrace,
                     fold_challenge_config,
                     log_basis_open: log_basis,
@@ -231,6 +232,7 @@ impl CommittedGroupParams {
                     ),
                 );
                 own.opening.opening_method = other.opening_method();
+                own.opening.source_view = other.source_view();
                 own.opening.log_basis_open = other.own_group().opening.log_basis_open;
                 own.opening.num_digits_open = other.own_group().opening.num_digits_open;
                 own.opening.num_digits_fold = other.num_digits_fold();
@@ -243,6 +245,7 @@ impl CommittedGroupParams {
 
     fn validate_exact_fold_plan(self) -> Result<Self, AkitaError> {
         self.validate_group_topology()?;
+        self.own_group().opening.validate_source_view(&self.own_group().profile, 1)?;
         if self.num_digits_fold() == 0 {
             return Err(AkitaError::InvalidSetup(
                 "exact fold plan must have nonzero digit depth".into(),

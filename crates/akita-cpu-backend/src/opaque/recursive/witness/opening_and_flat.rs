@@ -115,6 +115,7 @@ impl RecursiveWitnessFlat {
             live_coeff_len,
             committed_coeff_len: None,
             commitment_ring_dim: None,
+            full_ring_extent: None,
         }
     }
 
@@ -140,6 +141,7 @@ impl RecursiveWitnessFlat {
             live_coeff_len: expected,
             committed_coeff_len: None,
             commitment_ring_dim: None,
+            full_ring_extent: None,
         })
     }
 
@@ -158,6 +160,7 @@ impl RecursiveWitnessFlat {
             live_coeff_len,
             committed_coeff_len: None,
             commitment_ring_dim: None,
+            full_ring_extent: None,
         })
     }
 
@@ -168,6 +171,11 @@ impl RecursiveWitnessFlat {
         if ring_dim == 0 || !ring_dim.is_power_of_two() {
             return Err(AkitaError::InvalidSetup(
                 "recursive witness commitment ring dimension must be a power of two".into(),
+            ));
+        }
+        if self.full_ring_extent.is_some() && ring_dim != 128 {
+            return Err(AkitaError::InvalidInput(
+                "full-ring source cannot change ring dimension".into(),
             ));
         }
         let committed_len =
@@ -197,6 +205,57 @@ impl RecursiveWitnessFlat {
 
     pub(crate) fn live_coeff_len(&self) -> usize {
         self.live_coeff_len
+    }
+
+    /// Authenticate a bounded zero-padded view; the packed allocation stays live-only.
+    pub(crate) fn retain_full_ring_extent(&mut self, extent: usize) -> Result<(), AkitaError> {
+        if self.live_coeff_len != self.digits.len()
+            || extent != akita_params::witness_commitment_domain_len(self.live_coeff_len, 128)?
+            || self
+                .commitment_ring_dim
+                .is_some_and(|dimension| dimension != 128)
+            || self
+                .committed_coeff_len
+                .is_some_and(|length| length != extent)
+        {
+            return Err(AkitaError::InvalidInput(
+                "invalid full-ring physical witness extent".into(),
+            ));
+        }
+        self.committed_coeff_len = Some(extent);
+        self.commitment_ring_dim = Some(128);
+        self.full_ring_extent = Some(extent);
+        Ok(())
+    }
+
+    pub(crate) fn has_full_ring_extent(&self) -> bool {
+        self.full_ring_extent.is_some()
+    }
+
+    fn source_coefficient_len(&self) -> usize {
+        self.full_ring_extent.unwrap_or(self.live_coeff_len)
+    }
+
+    pub(crate) fn validate_full_ring_plan(
+        &self,
+        plan: &crate::opaque::CommitInnerPlan,
+    ) -> Result<(), AkitaError> {
+        if let Some(extent) = self.full_ring_extent {
+            let planned = plan
+                .num_live_blocks
+                .checked_mul(plan.num_positions_per_block)
+                .and_then(|n| n.checked_mul(plan.ring_dimension));
+            if plan.ring_dimension != 128
+                || plan.num_digits_inner != 1
+                || !(1..=7).contains(&plan.log_basis_inner)
+                || planned != Some(extent)
+            {
+                return Err(AkitaError::InvalidInput(
+                    "full-ring plan differs from authenticated physical extent".into(),
+                ));
+            }
+        }
+        Ok(())
     }
 
     pub(crate) fn commitment_physical_len(&self) -> Result<usize, AkitaError> {
@@ -256,7 +315,7 @@ impl RecursiveWitnessFlat {
         }
         SuffixWitnessView::from_recursive_witness(
             self.digits.zero_padded(physical_len)?,
-            self.live_coeff_len,
+            self.source_coefficient_len(),
         )
     }
 }
@@ -588,11 +647,11 @@ where
     F: Field,
 {
     fn num_ring_elems(&self) -> usize {
-        padded_ring_elems_for_live_len::<D>(self.live_coeff_len)
+        padded_ring_elems_for_live_len::<D>(self.source_coefficient_len())
     }
 
     fn num_live_ring_elems(&self) -> usize {
-        self.live_coeff_len.div_ceil(D)
+        self.source_coefficient_len().div_ceil(D)
     }
 }
 
@@ -617,7 +676,7 @@ where
     F: Field,
 {
     fn num_vars(&self) -> usize {
-        let coeff_count = self.live_coeff_len.next_power_of_two().max(1);
+        let coeff_count = self.source_coefficient_len().next_power_of_two().max(1);
         coeff_count.trailing_zeros() as usize
     }
 

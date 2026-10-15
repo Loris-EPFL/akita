@@ -1080,6 +1080,7 @@ fn group_batch_key_separates_final_arity_from_max_opening_arity() {
     let multi_group_key = ScheduleLookupKey {
         final_group: PolynomialGroupLayout::new(14, 3),
         precommitteds: vec![precommitted_descriptor(20)],
+        source_views: vec![akita_params::SourceOpeningView::Decoded; 2],
     };
 
     multi_group_key
@@ -1107,6 +1108,7 @@ fn group_batch_key_allows_independent_precommitted_num_vars() {
     let multi_group_key = ScheduleLookupKey {
         final_group: PolynomialGroupLayout::new(20, 3),
         precommitteds: vec![precommitted_descriptor(12)],
+        source_views: vec![akita_params::SourceOpeningView::Decoded; 2],
     };
 
     multi_group_key
@@ -1119,6 +1121,7 @@ fn group_batch_key_allows_precommitted_num_vars_equal_to_main() {
     let multi_group_key = ScheduleLookupKey {
         final_group: PolynomialGroupLayout::new(20, 3),
         precommitteds: vec![precommitted_descriptor(20)],
+        source_views: vec![akita_params::SourceOpeningView::Decoded; 2],
     };
 
     multi_group_key
@@ -1149,6 +1152,7 @@ fn group_batch_key_allows_mixed_polynomial_counts() {
             .expect("audited multi-polynomial B matrix");
             descriptor
         }],
+        source_views: vec![akita_params::SourceOpeningView::Decoded; 2],
     };
 
     multi_group_key
@@ -1167,6 +1171,7 @@ fn group_batch_key_identity_binds_ordered_profiles() {
     let key = ScheduleLookupKey {
         final_group: PolynomialGroupLayout::new(16, 1),
         precommitteds: vec![first, second],
+        source_views: vec![akita_params::SourceOpeningView::Decoded; 3],
     };
 
     let mut reordered = key.clone();

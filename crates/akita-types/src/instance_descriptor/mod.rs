@@ -28,7 +28,7 @@ use akita_params::descriptor_bytes::{
 };
 use akita_params::{
     BasisMode, CompressionPolicyId, DecompositionParams, FoldSchedule, OpeningClaimsLayout,
-    SisModulusProfileId, COMPRESSION_POLICY,
+    SisModulusProfileId, SourceOpeningView, COMPRESSION_POLICY,
 };
 use akita_serialization::{
     AkitaDeserialize, AkitaSerialize, Compress, SerializationError, Valid, Validate,
@@ -218,8 +218,12 @@ impl PlanSection {
 pub struct CallSection {
     /// Number of commitment groups opened by the call.
     pub num_commitment_groups: u32,
-    /// Per-group opening-point arities in descriptor/transcript order.
+    /// Immutable source arities in descriptor/transcript order.
     pub num_vars_per_commitment_group: Vec<u32>,
+    /// Consuming point arities, independent of source matrix capacity.
+    pub point_num_vars_per_commitment_group: Vec<u32>,
+    /// REQUIRED registered consuming views in commitment order.
+    pub source_views: Vec<SourceOpeningView>,
     /// Per-group polynomial counts in descriptor/transcript order.
     pub num_polys_per_commitment_group: Vec<u32>,
     /// Public basis mode for opening-point weights.
@@ -240,6 +244,10 @@ impl CallSection {
         basis_mode: BasisMode,
     ) -> Result<Self, AkitaError> {
         layout.check()?;
+        layout.validate_basis(basis_mode)?;
+        let point_num_vars_per_commitment_group = (0..layout.num_groups())
+            .map(|group| usize_to_u32(layout.group_point_num_vars(group)?, "point_num_vars_per_commitment_group"))
+            .collect::<Result<Vec<_>, AkitaError>>()?;
         let num_vars_per_commitment_group = layout
             .groups()
             .iter()
@@ -253,6 +261,8 @@ impl CallSection {
         Ok(Self {
             num_commitment_groups: usize_to_u32(layout.num_groups(), "num_commitment_groups")?,
             num_vars_per_commitment_group,
+            point_num_vars_per_commitment_group,
+            source_views: layout.views().to_vec(),
             num_polys_per_commitment_group,
             basis_mode,
             opening_batch_digest: layout.opening_batch_digest(),
@@ -604,6 +614,29 @@ impl Valid for CallSection {
                 "descriptor commitment groups must be non-empty".to_string(),
             ));
         }
+        if self.point_num_vars_per_commitment_group.len() != self.num_commitment_groups as usize
+            || self.source_views.len() != self.num_commitment_groups as usize
+        {
+            return Err(SerializationError::InvalidData("descriptor source/query/view count mismatch".into()));
+        }
+        let groups = self.num_vars_per_commitment_group.iter()
+            .zip(&self.num_polys_per_commitment_group)
+            .map(|(&vars, &polys)| akita_params::PolynomialGroupLayout::new(vars as usize, polys as usize))
+            .collect();
+        let layout = OpeningClaimsLayout::from_groups_and_views(groups, self.source_views.clone())
+            .map_err(|error| SerializationError::InvalidData(error.to_string()))?;
+        layout.validate_basis(self.basis_mode)
+            .map_err(|error| SerializationError::InvalidData(error.to_string()))?;
+        for (group, &actual) in self.point_num_vars_per_commitment_group.iter().enumerate() {
+            if layout.group_point_num_vars(group)
+                .map_err(|error| SerializationError::InvalidData(error.to_string()))? != actual as usize
+            {
+                return Err(SerializationError::InvalidData("descriptor source/query arity mismatch".into()));
+            }
+        }
+        if layout.opening_batch_digest() != self.opening_batch_digest {
+            return Err(SerializationError::InvalidData("descriptor opening layout digest mismatch".into()));
+        }
         Ok(())
     }
 }
@@ -636,6 +669,11 @@ impl AkitaSerialize for CallSection {
         for &group_size in &self.num_polys_per_commitment_group {
             group_size.serialize_with_mode(&mut writer, compress)?;
         }
+        // New grammar always carries exact ordered views and query dimensions.
+        for (&point_vars, &view) in self.point_num_vars_per_commitment_group.iter().zip(&self.source_views) {
+            point_vars.serialize_with_mode(&mut writer, compress)?;
+            view.tag().serialize_with_mode(&mut writer, compress)?;
+        }
         encode_basis_mode(self.basis_mode, &mut writer, compress)?;
         writer.write_all(&self.opening_batch_digest)?;
         Ok(())
@@ -655,6 +693,7 @@ impl AkitaSerialize for CallSection {
                 .iter()
                 .map(|group_size| group_size.serialized_size(compress))
                 .sum::<usize>()
+            + self.point_num_vars_per_commitment_group.len() * (0u32.serialized_size(compress) + 0u8.serialized_size(compress))
             + basis_mode_size(compress)
             + 32
     }
@@ -725,9 +764,23 @@ impl AkitaDeserialize for CallSection {
                 &(),
             )?);
         }
+        let mut point_num_vars_per_commitment_group = Vec::new();
+        let mut source_views = Vec::new();
+        point_num_vars_per_commitment_group.try_reserve_exact(expected_count)
+            .map_err(|_| SerializationError::InvalidData("descriptor query arity allocation failed".into()))?;
+        source_views.try_reserve_exact(expected_count)
+            .map_err(|_| SerializationError::InvalidData("descriptor opening view allocation failed".into()))?;
+        for _ in 0..expected_count {
+            point_num_vars_per_commitment_group.push(u32::deserialize_with_mode(&mut reader, compress, validate, &())?);
+            let tag = u8::deserialize_with_mode(&mut reader, compress, validate, &())?;
+            source_views.push(SourceOpeningView::from_tag(tag)
+                .map_err(|error| SerializationError::InvalidData(error.to_string()))?);
+        }
         let out = Self {
             num_commitment_groups,
             num_vars_per_commitment_group,
+            point_num_vars_per_commitment_group,
+            source_views,
             num_polys_per_commitment_group,
             basis_mode: decode_basis_mode(&mut reader, compress, validate)?,
             opening_batch_digest: read_digest(&mut reader)?,

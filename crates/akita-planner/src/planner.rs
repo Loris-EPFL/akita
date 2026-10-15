@@ -26,6 +26,10 @@ use crate::schedule_params::{
 };
 use crate::PlannerPolicy;
 
+mod full_ring_inner;
+#[cfg(test)]
+mod full_ring_inner_tests;
+
 #[cfg(test)]
 #[path = "test/adapted_schedule.rs"]
 mod adapted_schedule_tests;
@@ -44,6 +48,7 @@ pub(crate) struct ScheduleSearchOptions<'a> {
     pub(crate) relation_traversal_order: super::schedule_params::RelationTraversalOrder,
     pub(crate) relation_mode_filter: super::schedule_params::RelationModeFilter,
     pub(crate) root_main_constraint: Option<&'a CommittedGroupParams>,
+    pub(crate) root_final_profile: Option<&'a GroupCommitPhaseParams>,
     pub(crate) adaptation_guide: Option<&'a akita_params::FoldSchedule>,
     #[cfg(test)]
     pub(crate) query_prefix_count: u64,
@@ -55,6 +60,7 @@ impl ScheduleSearchOptions<'_> {
             relation_traversal_order: super::schedule_params::RelationTraversalOrder::Canonical,
             relation_mode_filter: super::schedule_params::RelationModeFilter::All,
             root_main_constraint: None,
+            root_final_profile: None,
             adaptation_guide: None,
             #[cfg(test)]
             query_prefix_count: 0,
@@ -62,31 +68,32 @@ impl ScheduleSearchOptions<'_> {
     }
 }
 
-/// Partition precommitted groups into interchangeable classes: groups with
-/// equal commit-phase profiles and equal source contracts.
-///
-/// Root planning assigns one opening to each class, and every group of the
-/// class opens with it. Groups of one class therefore materialize to identical
-/// parameters, and the opening search grows with the number of classes rather
-/// than with the number of groups.
-pub(crate) fn precommitted_group_equivalence_classes(
-    profiles: &[GroupCommitPhaseParams],
-    source_contracts: &[CommittedSourceContract],
+/// Interchangeable metadata classes include producer profile, contract and
+/// consuming view. Class multiplicity never aliases original identities.
+pub(crate) fn precommitted_classes_for_key(
+    key: &ScheduleLookupKey,
+    contracts: &[CommittedSourceContract],
 ) -> Result<Vec<Vec<usize>>, AkitaError> {
-    if profiles.len() != source_contracts.len() {
-        return Err(AkitaError::InvalidSetup(
-            "group-batch planning requires one source contract per precommitted profile"
-                .to_string(),
-        ));
-    }
+    let layout = key.opening_layout()?;
     let mut classes: Vec<Vec<usize>> = Vec::new();
-    for index in 0..profiles.len() {
-        if let Some(indices) = classes.iter_mut().find(|indices| {
+    if key.precommitteds.len() != contracts.len() {
+        return Err(AkitaError::InvalidInput("one contract per original is required".into()));
+    }
+    for index in 0..contracts.len() {
+        let view = layout.group_view(index)?;
+        let mut matching = None;
+        for (class, indices) in classes.iter().enumerate() {
             let representative = indices[0];
-            profiles[representative] == profiles[index]
-                && source_contracts[representative] == source_contracts[index]
-        }) {
-            indices.push(index);
+            if key.precommitteds[representative] == key.precommitteds[index]
+                && contracts[representative] == contracts[index]
+                && layout.group_view(representative)? == view
+            {
+                matching = Some(class);
+                break;
+            }
+        }
+        if let Some(class) = matching {
+            classes[class].push(index);
         } else {
             classes.push(vec![index]);
         }
@@ -94,7 +101,8 @@ pub(crate) fn precommitted_group_equivalence_classes(
     Ok(classes)
 }
 
-fn materialize_precommitted_group_for_open_basis(
+/// Admit an existing source profile without deriving a replacement A/B matrix.
+fn materialize_source_group_for_open_basis(
     (layout, source_contract): &PrecommittedGroupSeed,
     policy: &PlannerPolicy,
     opening: PlannerOpeningCandidate,
@@ -123,30 +131,40 @@ fn materialize_precommitted_group_for_open_basis(
         .and_then(|count| count.checked_mul(num_chunks))
         .ok_or_else(|| AkitaError::InvalidSetup("precommitted fold width overflow".into()))?;
     let group_claims = layout.group.num_polynomials();
-    let num_digits_fold = honest_fold_policy.num_digits_fold(HonestFoldSizingQuery {
-        ring_dimension,
-        challenge_dimension: opening.challenge_dimension(ring_dimension),
-        num_claims: group_claims,
-
-        num_live_ring_elements_per_claim: layout.blocks.live_ring_elements_per_claim,
-        num_positions_per_block: layout.blocks.positions_per_block,
-        num_live_blocks: layout.blocks.live_blocks,
-
-        num_chunks,
-        num_fold_coeffs,
-        witness_norms: source_contract
-            .source_norms(
-                layout.inner.digits.log_basis,
-                layout.inner.digits.num_digits,
-                ring_dimension,
-                akita_error::checked::pow2(layout.group.num_vars())
-                    .and_then(|len| len.checked_mul(group_claims))
-                    .ok_or_else(|| AkitaError::InvalidSetup("source length overflow".into()))?,
-            )?
-            .fold_witness,
-        log_basis_response: log_basis_open,
-        challenge_config: &opening.challenge_config(),
-    })?;
+    let witness_norms = source_contract
+        .source_norms(
+            layout.inner.digits.log_basis,
+            layout.inner.digits.num_digits,
+            ring_dimension,
+            akita_error::checked::pow2(layout.group.num_vars())
+                .and_then(|len| len.checked_mul(group_claims))
+                .ok_or_else(|| AkitaError::InvalidSetup("source length overflow".into()))?,
+        )?
+        .fold_witness;
+    let num_digits_fold = if opening.method().is_full_ring_scalar_extension() {
+        let bound = (group_claims as u128)
+            .checked_mul(layout.blocks.live_blocks as u128)
+            .and_then(|n| n.checked_mul(56))
+            .and_then(|n| n.checked_mul(witness_norms.infinity_norm()))
+            .ok_or_else(|| {
+                AkitaError::InvalidSetup("full-ring precommit response bound overflow".into())
+            })?;
+        akita_params::full_ring_response_depth(bound)?
+    } else {
+        honest_fold_policy.num_digits_fold(HonestFoldSizingQuery {
+            ring_dimension,
+            challenge_dimension: opening.challenge_dimension(ring_dimension),
+            num_claims: group_claims,
+            num_live_ring_elements_per_claim: layout.blocks.live_ring_elements_per_claim,
+            num_positions_per_block: layout.blocks.positions_per_block,
+            num_live_blocks: layout.blocks.live_blocks,
+            num_chunks,
+            num_fold_coeffs,
+            witness_norms,
+            log_basis_response: log_basis_open,
+            challenge_config: &opening.challenge_config(),
+        })?
+    };
     let Some(required_a_bound) = rounded_up_role_a_inf_norm(
         policy.sis_security_policy,
         policy.sis_table_digest,
@@ -194,6 +212,152 @@ fn materialize_precommitted_group_for_open_basis(
     .map(Some)
 }
 
+/// Finite response depths admitted by the unchanged source A/B capacities.
+///
+/// The lower endpoint is the producer's honest sizing policy. Larger depths
+/// are consumers only: no source digit, matrix, slice or profile is recreated.
+pub fn frozen_response_depth_choices(
+    profile: &GroupCommitPhaseParams,
+    source_contract: CommittedSourceContract,
+    policy: &PlannerPolicy,
+    challenge_subring_dimension: usize,
+    opening_ring_dimension: usize,
+    log_basis_open: u32,
+) -> Result<Vec<GroupOpenPhaseParams>, AkitaError> {
+    let dimensions = CommitmentRingDims {
+        inner: profile.inner.matrix.ring_dimension(),
+        outer: profile.outer.matrix.ring_dimension(),
+        opening: opening_ring_dimension,
+    };
+    let Some(opening) = PlannerOpeningCandidate::coefficient_packing(
+        0, policy.claim_ext_degree, dimensions, challenge_subring_dimension,
+    )? else {
+        return Ok(Vec::new());
+    };
+    let Some(first) = materialize_source_group_for_open_basis(
+        &(*profile, source_contract), policy, opening, opening_ring_dimension, log_basis_open,
+    )? else {
+        return Ok(Vec::new());
+    };
+    let mut choices = Vec::new();
+    // Every additional digit strictly increases the collision radius. Once a
+    // cell fails, no later depth can fit the same immutable A.
+    for depth in first.num_digits_fold()..=policy.decomposition.field_bits() as usize + 1 {
+        let Some(required) = rounded_up_role_a_inf_norm(
+            policy.sis_security_policy, policy.sis_table_digest, policy.sis_modulus_profile,
+            dimensions.d_a(), log_basis_open, &opening.challenge_config(), depth,
+            policy.chunks_at_level(0),
+        ) else {
+            break;
+        };
+        if required > profile.inner.matrix.coeff_linf_bound().ok_or_else(|| {
+            AkitaError::InvalidSetup("frozen response requires a Linf source A".into())
+        })? {
+            break;
+        }
+        choices.push(GroupOpenPhaseParams::admit(
+            *profile, depth,
+            PrecommittedGroupAdmissionPolicy {
+                decomposition: policy.decomposition,
+                sis_security_policy: policy.sis_security_policy,
+                sis_table_digest: policy.sis_table_digest,
+                sis_modulus_profile: policy.sis_modulus_profile,
+                num_response_chunks: policy.chunks_at_level(0),
+            },
+            opening.method(), opening.challenge_config(), log_basis_open,
+        )?);
+    }
+    Ok(choices)
+}
+
+/// Exact initial frozen capabilities, authenticated by producer class and
+/// geometry, never by prefix/final position.
+pub(crate) fn frozen_root_carrier(
+    profile: &GroupCommitPhaseParams,
+    source: CommittedSourceContract,
+) -> Result<usize, AkitaError> {
+    use akita_params::sis::CommittedSourceClass;
+    let native = profile.inner.matrix.ring_dimension() == 128
+        && profile.outer.matrix.ring_dimension() == 128;
+    match source.class() {
+        CommittedSourceClass::UnitOneHot { source_chunk_size: 1 }
+            if native && profile.inner.digits.num_digits == 1
+                && source.decomposition().log_commit_bound == 1 => Ok(128),
+        CommittedSourceClass::OriginalBalancedDigitPlanes
+            if native && profile.group == PolynomialGroupLayout::singleton(16)
+                && profile.inner.digits.log_basis == 5
+                && profile.inner.digits.num_digits == 26
+                && profile.blocks.live_ring_elements_per_claim == 512
+                && profile.blocks.positions_per_block == 32
+                && profile.blocks.live_blocks == 16
+                && profile.outer_slice_count == akita_params::CommitmentSliceCount::ONE => Ok(128),
+        CommittedSourceClass::BalancedSignedDigit
+            if profile.group == PolynomialGroupLayout::singleton(14)
+                && profile.inner.matrix.ring_dimension() == 512
+                && profile.outer.matrix.ring_dimension() == 64
+                && profile.inner.digits.log_basis == 13
+                && profile.inner.digits.num_digits == 10
+                && profile.outer.digits.log_basis == 3
+                && profile.outer.digits.num_digits == 43
+                && profile.blocks.positions_per_block == 4
+                && profile.blocks.live_blocks == 8
+                && profile.outer_slice_count.get() == 8
+                && source.decomposition().log_commit_bound == 128 => Ok(64),
+        _ => Err(AkitaError::UnsupportedSchedule(
+            "frozen root producer/profile has no registered native128 or decoded Dense64 capability".into(),
+        )),
+    }
+}
+
+pub(crate) fn frozen_deterministic_cap(
+    profile: &GroupCommitPhaseParams,
+    source: CommittedSourceContract,
+    config: &akita_challenges::SparseChallengeConfig,
+) -> Result<u128, AkitaError> {
+    let logical_len = checked::pow2(profile.group.num_vars())
+        .and_then(|n| n.checked_mul(profile.group.num_polynomials()))
+        .ok_or_else(|| AkitaError::InvalidInput("frozen logical source length overflow".into()))?;
+    let norms = source.source_norms(
+        profile.inner.digits.log_basis, profile.inner.digits.num_digits,
+        profile.inner.matrix.ring_dimension(), logical_len,
+    )?.fold_witness;
+    (config.infinity_norm() as u128).checked_mul(norms.l1_norm())
+        .zip((config.l1_norm() as u128).checked_mul(norms.infinity_norm()))
+        .map(|(a, b)| a.min(b))
+        .and_then(|n| n.checked_mul(profile.group.num_polynomials() as u128))
+        .and_then(|n| n.checked_mul(profile.blocks.live_blocks as u128))
+        .ok_or_else(|| AkitaError::InvalidSetup("frozen deterministic response cap overflow".into()))
+}
+
+fn materialize_frozen_source(
+    profile: &GroupCommitPhaseParams,
+    source: CommittedSourceContract,
+    policy: &PlannerPolicy,
+    opening: PlannerOpeningCandidate,
+    d_d: usize,
+    log_basis_open: u32,
+) -> Result<Option<GroupOpenPhaseParams>, AkitaError> {
+    let carrier = frozen_root_carrier(profile, source)?;
+    if opening.challenge_dimension(profile.inner.matrix.ring_dimension()) != carrier {
+        return Ok(None);
+    }
+    let depth = if carrier == 64 { 7 } else { 3 };
+    if carrier == 128 {
+        let cap = frozen_deterministic_cap(profile, source, &opening.challenge_config())?;
+        let (_, positive) = akita_params::sis::checked_balanced_digit_representable_bounds(
+            log_basis_open, depth,
+        );
+        if positive.is_some_and(|reach| cap > reach) {
+            return Err(AkitaError::UnsupportedSchedule(format!(
+                "all-valid root response gate: deterministic cap {cap} exceeds positive reach {positive:?} at depth {depth}"
+            )));
+        }
+    }
+    Ok(frozen_response_depth_choices(
+        profile, source, policy, carrier, d_d, log_basis_open,
+    )?.into_iter().find(|candidate| candidate.num_digits_fold() == depth))
+}
+
 struct MultiGroupRootCandidateCtx<'a> {
     policy: &'a PlannerPolicy,
     dimensions: CommitmentRingDims,
@@ -230,7 +394,7 @@ fn precommitted_groups_for_open_basis(
     let mut groups = vec![None; seeds.len()];
     let mut d_width = 0usize;
     for (indices, &opening) in equivalence_classes.iter().zip(class_openings) {
-        let Some(materialized) = materialize_precommitted_group_for_open_basis(
+        let Some(materialized) = materialize_source_group_for_open_basis(
             &seeds[indices[0]],
             policy,
             opening,
@@ -294,12 +458,14 @@ impl PreparedRootProducers {
         dimensions.validate_role_projection()?;
         opening.validate_for(0, policy.claim_ext_degree, dimensions)?;
         let alpha = dimensions.d_a().trailing_zeros() as usize;
-        if key.final_group.num_vars().saturating_sub(alpha) == 0 {
+        if key.final_group.num_vars() < alpha
+            || (key.final_group.num_vars() == alpha
+                && !opening.method().is_full_ring_scalar_extension())
+        {
             return Ok(None);
         }
-        let equivalence_classes = precommitted_group_equivalence_classes(
-            &key.precommitteds,
-            precommitted_source_contracts,
+        let equivalence_classes = precommitted_classes_for_key(
+            key, precommitted_source_contracts,
         )?;
         if precommitted_class_openings
             .iter()
@@ -320,7 +486,7 @@ impl PreparedRootProducers {
             .copied()
             .zip(precommitted_source_contracts.iter().copied())
             .collect::<Vec<PrecommittedGroupSeed>>();
-        let Some((groups, d_width)) = precommitted_groups_for_open_basis(
+        let Some((mut groups, d_width)) = precommitted_groups_for_open_basis(
             &seeds,
             &equivalence_classes,
             precommitted_class_openings,
@@ -331,7 +497,48 @@ impl PreparedRootProducers {
         else {
             return Ok(None);
         };
+        for (index, group) in groups.iter_mut().enumerate() {
+            group.opening.source_view = key.source_views[index];
+            group.opening.validate_source_view(&group.profile, policy.claim_ext_degree)?;
+        }
         Ok(Some(Self { groups, d_width }))
+    }
+
+    pub(crate) fn prepare_frozen(
+        key: &ScheduleLookupKey,
+        sources: &[CommittedSourceContract],
+        policy: &PlannerPolicy,
+        dimensions: CommitmentRingDims,
+        opening: PlannerOpeningCandidate,
+        class_openings: &[PlannerOpeningCandidate],
+        log_basis_open: u32,
+    ) -> Result<Option<Self>, AkitaError> {
+        let Some(mut prepared) = Self::prepare(
+            key, sources, policy, dimensions, opening, class_openings, log_basis_open,
+        )? else {
+            return Ok(None);
+        };
+        let classes = precommitted_classes_for_key(key, sources)?;
+        prepared.d_width = 0;
+        for (indices, &class_opening) in classes.iter().zip(class_openings) {
+            let index = indices[0];
+            let Some(mut group) = materialize_frozen_source(
+                &key.precommitteds[index], sources[index], policy, class_opening,
+                dimensions.d_d(), log_basis_open,
+            )? else {
+                return Ok(None);
+            };
+            group.opening.source_view = key.source_views[index];
+            group.opening.validate_source_view(&group.profile, policy.claim_ext_degree)?;
+            prepared.d_width = checked::mul_add(
+                group.d_segment_width(policy.claim_ext_degree, dimensions.d_d())?,
+                indices.len(), prepared.d_width,
+            ).ok_or_else(|| AkitaError::InvalidSetup("frozen D contribution overflow".into()))?;
+            for &index in indices {
+                prepared.groups[index] = group;
+            }
+        }
+        Ok(Some(prepared))
     }
 }
 
@@ -352,7 +559,9 @@ pub(crate) fn root_level_candidates_for_prepared_producers(
     let field_bits = policy.decomposition.field_bits();
     let alpha = dimensions.d_a().trailing_zeros() as usize;
     let reduced_vars = key.final_group.num_vars().saturating_sub(alpha);
-    if reduced_vars == 0 {
+    if key.final_group.num_vars() < alpha
+        || (reduced_vars == 0 && !opening.method().is_full_ring_scalar_extension())
+    {
         return Ok(Vec::new());
     }
     let candidate_ctx = MultiGroupRootCandidateCtx {
@@ -365,8 +574,14 @@ pub(crate) fn root_level_candidates_for_prepared_producers(
         source: crate::schedule_params::root_inner_basis_source(final_source_contract),
     };
     let opening_batch = key.opening_layout()?;
-    let min_block_index_bits: usize = if reduced_vars >= 3 { 1 } else { 0 };
-    let max_block_index_bits: usize = (reduced_vars - 1).min(usize::BITS as usize - 1);
+    let full_ring = opening.method().is_full_ring_scalar_extension();
+    let min_block_index_bits: usize = if full_ring || reduced_vars < 3 { 0 } else { 1 };
+    let max_block_index_bits: usize = (if full_ring {
+        reduced_vars
+    } else {
+        reduced_vars - 1
+    })
+    .min(usize::BITS as usize - 1);
     let num_ring_elems = checked::pow2(reduced_vars).ok_or_else(|| {
         AkitaError::InvalidSetup("root reduced-variable domain is too large".into())
     })?;
@@ -392,6 +607,9 @@ pub(crate) fn root_level_candidates_for_prepared_producers(
             policy.chunks_at_level(0),
         )
     };
+    if full_ring && guide.is_none() {
+        split_domain = (0..=reduced_vars).collect();
+    }
     if guide.is_none() && min_block_index_bits == 0 {
         split_domain.push(0);
     }
@@ -405,6 +623,11 @@ pub(crate) fn root_level_candidates_for_prepared_producers(
         let num_live_blocks = 1usize << block_index_bits;
         let mut slice_candidates = Vec::new();
         for outer_slice_count in akita_params::CommitmentSliceCount::ALL {
+            if opening.method().is_full_ring_scalar_extension()
+                && outer_slice_count != akita_params::CommitmentSliceCount::ONE
+            {
+                continue;
+            }
             if guide.is_some_and(|guide| outer_slice_count != guide.outer_slice_count) {
                 continue;
             }
@@ -437,6 +660,13 @@ pub(crate) fn root_level_candidates_for_prepared_producers(
             if !candidate_params.compression_sources_supported()? {
                 continue;
             }
+            if opening.method().is_full_ring_scalar_extension()
+                && candidate_params
+                    .validate_full_ring_execution(policy.claim_ext_degree)
+                    .is_err()
+            {
+                continue;
+            }
             slice_candidates.push(candidate_params);
         }
         for candidate_params in crate::schedule_params::prune_locally_unprofitable_slices(
@@ -458,6 +688,80 @@ pub(crate) fn root_level_candidates_for_prepared_producers(
     }
 
     Ok(candidates)
+}
+
+/// Frozen A/B admission, followed only by consumer-owned D construction.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn root_candidate_for_frozen_profile(
+    profile: &GroupCommitPhaseParams,
+    source_contract: CommittedSourceContract,
+    policy: &PlannerPolicy,
+    dimensions: CommitmentRingDims,
+    opening: PlannerOpeningCandidate,
+    producers: &PreparedRootProducers,
+    log_basis_open: u32,
+    opening_batch: &OpeningClaimsLayout,
+) -> Result<Option<(CommittedGroupParams, usize)>, AkitaError> {
+    if profile.inner.matrix.ring_dimension() != dimensions.d_a()
+        || profile.outer.matrix.ring_dimension() != dimensions.d_b()
+        || log_basis_open < profile.outer.digits.log_basis
+    {
+        return Ok(None);
+    }
+    let Some(mut main) = materialize_frozen_source(
+        profile,
+        source_contract,
+        policy,
+        opening,
+        dimensions.d_d(),
+        log_basis_open,
+    )?
+    else {
+        return Ok(None);
+    };
+    main.opening.source_view = opening_batch.group_view(opening_batch.root_final_group_index()?)?;
+    main.opening.validate_source_view(&main.profile, policy.claim_ext_degree)?;
+    let main_width = main.d_segment_width(policy.claim_ext_degree, dimensions.d_d())?;
+    let Some((open_key, main_width)) = projected_collision_role_price(
+        policy,
+        SisMatrixRole::Open,
+        dimensions.d_d(),
+        dimensions.d_d(),
+        main_width,
+        log_basis_open,
+    ) else {
+        return Ok(None);
+    };
+    let width = main_width
+        .checked_add(producers.d_width)
+        .ok_or_else(|| AkitaError::InvalidSetup("frozen root batch D width overflow".into()))?;
+    let Ok(open_matrix) = OpenCommitMatrixParams::try_new_with_min_rank(open_key, width) else {
+        return Ok(None);
+    };
+    let groups = producers
+        .groups
+        .iter()
+        .copied()
+        .chain(std::iter::once(main))
+        .collect();
+    let params = CommittedGroupParams::try_new(
+        groups,
+        open_matrix,
+        akita_params::CommitmentPayloadMode::Compressed,
+        akita_params::RingRelationMode::QuotientLift,
+        akita_params::CommittedSourceEncoding::CanonicalCoefficientTable,
+        akita_params::ChunkedWitnessCfg::default(),
+    )?;
+    let Some(next_len) = root_batch_next_w_len(
+        policy.decomposition.field_bits(),
+        policy.claim_ext_degree,
+        &params,
+        opening_batch,
+    )?
+    else {
+        return Ok(None);
+    };
+    Ok(Some((params, next_len)))
 }
 
 fn root_final_group_level_params_candidate(
@@ -599,6 +903,7 @@ fn root_final_group_level_params_candidate(
                 ),
             },
             opening: akita_params::GroupOpeningPlan {
+                source_view: akita_params::SourceOpeningView::Decoded,
                 opening_method: ctx.opening.method(),
                 fold_challenge_config: ctx.opening.challenge_config(),
                 log_basis_open,
@@ -612,7 +917,11 @@ fn root_final_group_level_params_candidate(
         groups,
         open_commit_matrix,
         akita_params::CommitmentPayloadMode::Compressed,
-        akita_params::RingRelationMode::QuotientLift,
+        if ctx.opening.method().is_full_ring_scalar_extension() {
+            akita_params::RingRelationMode::ExactCoefficientRows
+        } else {
+            akita_params::RingRelationMode::QuotientLift
+        },
         akita_params::CommittedSourceEncoding::for_producer(
             ctx.opening.method(),
             policy.claim_ext_degree,
@@ -651,6 +960,195 @@ pub fn find_schedule(
         ring_challenge_config,
         ScheduleSearchOptions::canonical(),
     )
+}
+
+/// Plan one complete row over exact ordered originals and authenticated views.
+///
+/// A/B/F, source digits, blocks and slicing are immutable. Initial VM sources
+/// use native128/base32 and all-valid response depth3; decoded Dense originals
+/// use their actual carrier64/h8/base8/depth7 recipe. These root capabilities
+/// never restrict the freshly generated full shrinking suffix or terminal.
+///
+/// The finite domain is the validated policy's dimension/basis/split/setup
+/// domain and the existing recursion cap. As in ordinary search, the root
+/// opening basis is the configured minimum, not the entire opening range.
+/// There is no scalar guide, geometry rewrite, or unconstrained fallback.
+///
+/// Contracts must come from the actual producers: profile equality does not
+/// authenticate physical source identity. Malformed/incompatible inputs return
+/// `InvalidInput`/`InvalidSetup`; exhausted capacity or policy domains return
+/// `UnsupportedSchedule`. The result passes ordinary row admission, but must
+/// still enter a separately trusted catalog before runtime use.
+pub fn find_schedule_for_frozen_profiles(
+    profiles: &akita_params::CommittedGroupBatchProfile,
+    final_source_contract: CommittedSourceContract,
+    precommitted_source_contracts: &[CommittedSourceContract],
+    source_views: &[akita_params::SourceOpeningView],
+    policy: &PlannerPolicy,
+    ring_challenge_config: impl Fn(usize) -> Result<akita_challenges::SparseChallengeConfig, AkitaError>,
+) -> Result<PlannedFoldSchedule, AkitaError> {
+    use akita_params::sis::CommittedSourceClass;
+
+    akita_schedules::planner_support::validate_policy(policy)?;
+    profiles.validate(policy.decomposition.field_bits())?;
+    let key = ScheduleLookupKey::with_views(
+        profiles.final_group.group, profiles.precommitteds.clone(), source_views.to_vec(),
+    )?;
+    key.validate(policy.decomposition.field_bits())?;
+    for ((profile, source), &view) in profiles.precommitteds.iter()
+        .zip(precommitted_source_contracts.iter().copied())
+        .chain(std::iter::once((&profiles.final_group, final_source_contract)))
+        .zip(source_views)
+    {
+        view.validate_producer_contract(source)?;
+        frozen_root_carrier(profile, source)?;
+    }
+    if policy.opening_family != akita_schedules::PlannerOpeningFamily::Legacy
+        || policy.claim_ext_degree != 1
+        || policy.chal_ext_degree != 1
+        || policy.sis_modulus_profile != akita_params::SisModulusProfileId::Q128OffsetA7F7
+        || policy.sis_table_digest != akita_params::SisTableDigest::CURRENT
+        || policy.witness_chunk != akita_params::ChunkedWitnessCfg::default()
+    {
+        return Err(AkitaError::InvalidSetup(
+            "frozen original-source planning requires ordinary K/K, Q128OffsetA7F7, current SIS tables and single chunks".into(),
+        ));
+    }
+    if profiles.precommitteds.len() != precommitted_source_contracts.len()
+        || final_source_contract.decomposition().field_bits() != 128
+        || final_source_contract.decomposition().log_commit_bound
+            != policy.decomposition.log_commit_bound
+        || precommitted_source_contracts.iter().any(|source| {
+            source.decomposition().field_bits() != 128
+        })
+    {
+        return Err(AkitaError::InvalidInput(
+            "frozen planning requires one authentic 128-bit producer contract per ordered original and a final bound matching policy".into(),
+        ));
+    }
+    // The final VM source is the designated last Main. Decoded Dense batches
+    // designate their last original instead. Prefixes are not RAM-only.
+    if !matches!(final_source_contract.class(),
+        CommittedSourceClass::UnitOneHot { source_chunk_size: 1 }
+            | CommittedSourceClass::BalancedSignedDigit)
+    {
+        return Err(AkitaError::InvalidInput(
+            "frozen final source must be the designated Main or decoded Dense original".into(),
+        ));
+    }
+    let dimension_domain = crate::schedule_params::dimension_candidates(
+        policy,
+        0,
+        crate::schedule_params::initial_dimension_ceiling(policy)?,
+    )?;
+    let mut outside_domain = false;
+    for (profile, source) in std::iter::once((&profiles.final_group, final_source_contract)).chain(
+        profiles
+            .precommitteds
+            .iter()
+            .zip(precommitted_source_contracts.iter().copied()),
+    ) {
+        let a_key = profile.inner.matrix.sis_table_key().ok_or_else(|| {
+            AkitaError::InvalidSetup("frozen original sources require a Linf A certificate".into())
+        })?;
+        for key in [a_key, profile.outer.matrix.sis_table_key()] {
+            if key.policy != policy.sis_security_policy
+                || key.table_digest != policy.sis_table_digest
+                || key.modulus_profile != policy.sis_modulus_profile
+            {
+                return Err(AkitaError::InvalidSetup(
+                    "frozen A/B certificate does not match the consuming SIS policy".into(),
+                ));
+            }
+        }
+        source.source_norms(
+            profile.inner.digits.log_basis,
+            profile.inner.digits.num_digits,
+            profile.inner.matrix.ring_dimension(),
+            checked::pow2(profile.group.num_vars())
+                .and_then(|len| len.checked_mul(profile.group.num_polynomials()))
+                .ok_or_else(|| AkitaError::InvalidInput("frozen source length overflow".into()))?,
+        )?;
+        if profile.outer.digits.num_digits
+            != num_digits_open(DecompositionParams {
+                log_basis: profile.outer.digits.log_basis,
+                ..policy.decomposition
+            })
+        {
+            return Err(AkitaError::InvalidSetup(
+                "frozen B depth does not match its source-owned basis".into(),
+            ));
+        }
+        let required_b = rounded_up_collision_inf_norm(
+            policy.sis_security_policy,
+            policy.sis_modulus_profile,
+            SisMatrixRole::Outer,
+            profile.outer.matrix.ring_dimension(),
+            profile.outer.digits.log_basis,
+        )
+        .ok_or_else(|| AkitaError::InvalidSetup("frozen B has no certified norm".into()))?;
+        if profile.outer.matrix.coeff_linf_bound() < required_b {
+            return Err(AkitaError::InvalidSetup(
+                "frozen B cannot cover its own basis".into(),
+            ));
+        }
+        outside_domain |= !dimension_domain.iter().any(|dims| {
+            dims.d_a() == profile.inner.matrix.ring_dimension()
+                && dims.d_b() == profile.outer.matrix.ring_dimension()
+        }) || profile.outer.digits.log_basis > policy.opening_basis_range.0;
+        let dimension = frozen_root_carrier(profile, source)?;
+        let production =
+            akita_challenges::SparseChallengeConfig::production_for_ring_dim(dimension)
+                .ok_or_else(|| {
+                    AkitaError::InvalidSetup("frozen A has no production shell".into())
+                })?;
+        if ring_challenge_config(dimension)? != production {
+            return Err(AkitaError::InvalidSetup(
+                "frozen native root requires the production challenge shell".into(),
+            ));
+        }
+        let dims = CommitmentRingDims {
+            inner: profile.inner.matrix.ring_dimension(),
+            outer: profile.outer.matrix.ring_dimension(),
+            opening: dimension,
+        };
+        let opening = PlannerOpeningCandidate::coefficient_packing(0, 1, dims, dimension)?
+            .ok_or_else(|| AkitaError::UnsupportedSchedule("frozen carrier projection gate".into()))?;
+        if materialize_frozen_source(profile, source, policy, opening, dimension,
+            policy.opening_basis_range.0)?.is_none()
+        {
+            return Err(AkitaError::UnsupportedSchedule(format!(
+                "frozen response capacity gate: original {profile:?} cannot admit carrier {dimension}, base {}, required response depth {} without changing A/B",
+                policy.opening_basis_range.0, if dimension == 64 { 7 } else { 3 },
+            )));
+        }
+    }
+    let inner_basis = profiles.final_group.inner.digits.log_basis;
+    if final_source_contract.class() != CommittedSourceClass::BalancedSignedDigit {
+        outside_domain |=
+            !(policy.inner_basis_range.0..=policy.inner_basis_range.1).contains(&inner_basis);
+    }
+    if outside_domain {
+        return Err(AkitaError::UnsupportedSchedule(format!(
+            "frozen profiles {profiles:?} are outside the root dimension/basis domain of {policy:?}"
+        )));
+    }
+    let planned = find_schedule_in_relation_order(
+        &key,
+        final_source_contract,
+        precommitted_source_contracts,
+        policy,
+        ring_challenge_config,
+        ScheduleSearchOptions {
+            root_final_profile: Some(&profiles.final_group),
+            ..ScheduleSearchOptions::canonical()
+        },
+    )?;
+    // Admission checks the exact ordered input profiles, not a reconstructed
+    // profile derived from whichever candidate the search happened to select.
+    ResolvedScheduleRow::try_new(profiles.clone(), planned.schedule.clone(), policy)?
+        .validate_opening_layout(&key.opening_layout()?)?;
+    Ok(planned)
 }
 
 /// Adapt a validated scalar main row to an exact grouped-root key.
@@ -807,6 +1305,23 @@ pub(crate) fn find_schedule_in_relation_order(
     let diagnostics = diagnostics.as_deref();
     akita_schedules::planner_support::validate_policy(policy)?;
     key.validate(policy.decomposition.field_bits())?;
+    if options.root_final_profile.is_none()
+        && key.source_views.iter().any(|view| {
+            *view != akita_params::SourceOpeningView::Decoded
+        })
+    {
+        return Err(AkitaError::InvalidInput(
+            "original RAM views require exact frozen-profile planning; no decoded/adapted fallback".into(),
+        ));
+    }
+    if options.root_final_profile.is_some()
+        && (options.root_main_constraint.is_some() || options.adaptation_guide.is_some())
+    {
+        return Err(AkitaError::InvalidInput(
+            "frozen source planning cannot also use a scalar main constraint or adaptation guide"
+                .into(),
+        ));
+    }
     if final_source_contract.decomposition().field_bits() != policy.decomposition.field_bits()
         || final_source_contract.decomposition().log_commit_bound
             != policy.decomposition.log_commit_bound
@@ -827,6 +1342,25 @@ pub(crate) fn find_schedule_in_relation_order(
         return Err(AkitaError::InvalidInput(
             "precommitted source contract field must match the consuming planner field".into(),
         ));
+    }
+    match policy.opening_family {
+        akita_schedules::PlannerOpeningFamily::FullRingE2OuterDirect => {
+            return find_full_ring_direct_schedule(
+                key,
+                final_source_contract,
+                precommitted_source_contracts,
+                policy,
+            )
+        }
+        akita_schedules::PlannerOpeningFamily::FullRingE2InnerRecursive => {
+            return full_ring_inner::find_schedule(
+                key,
+                final_source_contract,
+                precommitted_source_contracts,
+                policy,
+            )
+        }
+        akita_schedules::PlannerOpeningFamily::Legacy => {}
     }
     let ring_challenge_config: RingChallengeConfigFn<'_> = &ring_challenge_config;
     let scalar_policy;
@@ -860,6 +1394,7 @@ pub(crate) fn find_schedule_in_relation_order(
         setup_field_budget,
         root_lookup_key: Some(key),
         root_main_constraint: options.root_main_constraint,
+        root_final_profile: options.root_final_profile,
         adaptation_guide: options.adaptation_guide,
         root_source_contract: Some(final_source_contract),
         precommitted_source_contracts,
@@ -911,6 +1446,14 @@ pub(crate) fn find_schedule_in_relation_order(
     };
 
     let Some(best) = best.cloned() else {
+        if let Some(profile) = options.root_final_profile {
+            return Err(AkitaError::UnsupportedSchedule(format!(
+                "finite frozen root-output/shrinking-suffix/actual-terminal closure gate exhausted: \
+                 final profile {profile:?}, ordered prefix profiles {:?}, ordered views {:?}, \
+                 policy domain {active_policy:?}; no adaptation or decoded fallback attempted",
+                key.precommitteds, key.source_views
+            )));
+        }
         if key.precommitteds.is_empty()
             && matches!(
                 active_policy.ring_dimension_schedule_mode,
@@ -923,10 +1466,7 @@ pub(crate) fn find_schedule_in_relation_order(
                 key.final_group.num_polynomials()
             )));
         }
-        let class_count = precommitted_group_equivalence_classes(
-            &key.precommitteds,
-            precommitted_source_contracts,
-        )?
+        let class_count = crate::planner::precommitted_classes_for_key(key, precommitted_source_contracts)?
         .len();
         let bounded_note = if u32::try_from(class_count)
             .ok()
@@ -1014,3 +1554,184 @@ pub(crate) fn find_schedule_in_relation_order(
 #[cfg(all(test, feature = "catalog-gen"))]
 #[path = "test/planner_totality.rs"]
 mod totality_tests;
+
+/// Finite ordinary-outer selection. Reuses original producer admission and
+/// native Eq109 sizing, but enumerates actual A-only terminals: constructing
+/// fictitious terminal B/D/F/H matrices would reject valid direct closures.
+fn find_full_ring_direct_schedule(
+    key: &ScheduleLookupKey,
+    source: CommittedSourceContract,
+    precommitted_sources: &[CommittedSourceContract],
+    policy: &PlannerPolicy,
+) -> Result<PlannedFoldSchedule, AkitaError> {
+    use akita_params::{
+        BlockGeometry, CommittedGroupBatchProfile, FoldParams, FoldSchedule, FoldScheduleEstimate,
+        GadgetDigits, InnerRoleParams, OpeningMethod, TailSegmentLayout, TerminalFoldParams,
+        TerminalResponseCodec, TerminalResponseShape, FULL_RING_FOLD_CHALLENGE,
+    };
+    let dimensions = CommitmentRingDims::uniform(128);
+    let opening =
+        PlannerOpeningCandidate::full_ring_scalar_extension(policy.claim_ext_degree, dimensions)?;
+    let classes = crate::planner::precommitted_classes_for_key(key, precommitted_sources)?;
+    let precommit_openings = vec![opening; classes.len()];
+    let producers = PreparedRootProducers::prepare(
+        key,
+        precommitted_sources,
+        policy,
+        dimensions,
+        opening,
+        &precommit_openings,
+        5,
+    )?
+    .ok_or_else(|| {
+        AkitaError::UnsupportedSchedule(
+            "full-ring original producer contracts are infeasible".into(),
+        )
+    })?;
+    let roots = root_level_candidates_for_prepared_producers(
+        key, source, policy, dimensions, opening, &producers, 5, 5, None,
+    )?;
+    let layout = key.opening_layout()?;
+    // Expanded setup, fixed wire bytes, successor capacity, canonical descriptor.
+    type CandidateKey = (usize, usize, usize, Vec<u8>);
+    let mut best: Option<(CandidateKey, PlannedFoldSchedule)> = None;
+    for (root, capacity) in roots {
+        root.validate_full_ring_execution(2)?;
+        if capacity < 128 || !capacity.is_power_of_two() {
+            return Err(AkitaError::InvalidSetup(
+                "full-ring successor is not a physical identity cube".into(),
+            ));
+        }
+        let ring_count = capacity / 128;
+        for position_bits in 0..=ring_count.trailing_zeros() {
+            let positions = 1usize.checked_shl(position_bits).ok_or_else(|| {
+                AkitaError::InvalidSetup("terminal position count overflow".into())
+            })?;
+            let blocks = ring_count / positions;
+            let codec = TerminalResponseCodec::full_ring(blocks)?;
+            let TerminalResponseCodec::SignedFixedWidth {
+                coefficient_bound, ..
+            } = codec
+            else {
+                return Err(AkitaError::InvalidSetup(
+                    "full-ring fixed codec mismatch".into(),
+                ));
+            };
+            let collision = akita_params::sis::role_a_collision_inf_norm_for_response_bound(
+                56,
+                coefficient_bound,
+            )
+            .ok_or_else(|| AkitaError::InvalidSetup("terminal collision bound overflow".into()))?;
+            let Some(table_key) = akita_params::sis::sis_table_key_for_linf_bound(
+                policy.sis_security_policy,
+                policy.sis_table_digest,
+                policy.sis_modulus_profile,
+                akita_params::SisMatrixRole::Inner,
+                128,
+                collision,
+            ) else {
+                continue;
+            };
+            // At fixed source geometry every larger certified rank increases
+            // setup and payload without changing any response/witness bound.
+            let Ok(matrix) =
+                akita_params::InnerCommitMatrixParams::try_new_with_min_rank(table_key, positions)
+            else {
+                continue;
+            };
+            let mut terminal = TerminalFoldParams {
+                opening_method: OpeningMethod::FULL_RING_E2,
+                source_encoding: akita_params::CommittedSourceEncoding::CanonicalCoefficientTable,
+                response_codec: codec,
+                blocks: BlockGeometry::new(ring_count, positions, blocks),
+                inner: InnerRoleParams::new(GadgetDigits::new(5, 1), matrix),
+                fold: GadgetDigits::new(
+                    5,
+                    akita_params::full_ring_response_depth(coefficient_bound)?,
+                ),
+                fold_challenge_config: FULL_RING_FOLD_CHALLENGE,
+                response_shape: TerminalResponseShape {
+                    layout: TailSegmentLayout {
+                        ring_dimension: 128,
+                        groups: Vec::new(),
+                        logical_num_elems: 0,
+                    },
+                },
+                input_witness_len: capacity,
+            };
+            terminal.response_shape = TerminalResponseShape::derive(&terminal, coefficient_bound)?;
+            terminal.validate_opening_execution(2)?;
+            let schedule = FoldSchedule {
+                root: FoldParams {
+                    input_witness_len: akita_params::root_input_witness_len(&root),
+                    output_witness_len: capacity,
+                    params: root.clone(),
+                },
+                recursive_folds: Vec::new(),
+                terminal,
+            };
+            let profiles = CommittedGroupBatchProfile {
+                final_group: root.own_group().profile,
+                precommitteds: key.precommitteds.clone(),
+            };
+            // Geometry checks never establish installation. This is the same
+            // independent semantic audit used before emitted rows enter catalogs.
+            ResolvedScheduleRow::try_new(profiles, schedule.clone(), policy)?;
+            let expanded_setup = schedule.full_ring_expanded_setup_coefficients()?;
+            if policy
+                .setup_field_budget
+                .is_some_and(|limit| expanded_setup > limit)
+            {
+                continue;
+            }
+            let terminal_bytes = schedule.terminal.fixed_payload_bytes(128)?;
+            let root_payload = akita_schedules::planner_support::nonterminal_level_payload_bytes(
+                policy,
+                &root,
+                &layout,
+                akita_params::FoldSuccessor::Terminal(&schedule.terminal),
+                capacity,
+            )?
+            .direct;
+            let fixed_payload = root
+                .opening_payload_geometry()?
+                .transmitted_coefficients()
+                .checked_mul(16)
+                .and_then(|n| n.checked_add(terminal_bytes))
+                .ok_or_else(|| {
+                    AkitaError::InvalidSetup("full-ring fixed payload overflow".into())
+                })?;
+            let score = (
+                expanded_setup,
+                fixed_payload,
+                capacity,
+                schedule.canonical_descriptor_bytes(),
+            );
+            if best
+                .as_ref()
+                .is_some_and(|(incumbent, _)| incumbent <= &score)
+            {
+                continue;
+            }
+            let estimate = FoldScheduleEstimate {
+                nonce_max_bytes: 0,
+                estimated_root_direct_payload_bytes: root_payload,
+                estimated_root_stage3_payload_bytes: 0,
+                estimated_recursive_direct_payload_bytes: Vec::new(),
+                estimated_recursive_stage3_payload_bytes: Vec::new(),
+                estimated_terminal_direct_payload_bytes: terminal_bytes,
+                estimated_terminal_response_payload_bytes: terminal_bytes,
+                estimated_num_setup_field_elements:
+                    akita_params::setup_matrix_capacity_for_schedule(&schedule)?.num_field_elements,
+                first_direct_setup_field_len: None,
+                selected_offload_edges: 0,
+            };
+            best = Some((score, PlannedFoldSchedule { schedule, estimate }));
+        }
+    }
+    best.map(|(_, planned)| planned).ok_or_else(|| {
+        AkitaError::UnsupportedSchedule(
+            "no finite installed-certificate full-ring root/A-only terminal candidate".into(),
+        )
+    })
+}

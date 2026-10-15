@@ -1,3 +1,6 @@
+# Rust jobs build sibling akita/ and jolt/ checkouts. Keep the event revision
+# for this repository so PR gates test the proposed changes; the companion is
+# pinned to the supported akita-query-relation-accumulation-v8 branch.
 name: Portability
 
 on:
@@ -21,9 +24,24 @@ jobs:
   portable-x86:
     name: Portable x86 verifier check
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: akita
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: akita
+      - name: Checkout paired jolt
+        id: paired-jolt
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: Loris-EPFL/jolt
+          ref: akita-query-relation-accumulation-v8
+          path: jolt
+          persist-credentials: false
       - uses: actions-rust-lang/setup-rust-toolchain@ecabd13d1c56bd1345c230e542e9144811ad706f # v2.0.0
+        with:
+          rust-src-dir: akita
       - name: Check verifier with portable CPU target
         run: RUSTFLAGS="-D warnings -C target-cpu=x86-64" cargo check --release -p akita-verifier --no-default-features --features transcript-blake2b
       - name: Test exact-cache boundary
@@ -34,9 +52,24 @@ jobs:
   aarch64-neon:
     name: Native AArch64 NEON kernels
     runs-on: ubuntu-24.04-arm
+    defaults:
+      run:
+        working-directory: akita
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: akita
+      - name: Checkout paired jolt
+        id: paired-jolt
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: Loris-EPFL/jolt
+          ref: akita-query-relation-accumulation-v8
+          path: jolt
+          persist-credentials: false
       - uses: actions-rust-lang/setup-rust-toolchain@ecabd13d1c56bd1345c230e542e9144811ad706f # v2.0.0
+        with:
+          rust-src-dir: akita
       - name: Require native AArch64 NEON
         run: |
           test "$(uname -m)" = "aarch64"
@@ -53,9 +86,24 @@ jobs:
   avx512-ifma:
     name: AVX-512 IFMA exact NTT (emulated)
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: akita
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: akita
+      - name: Checkout paired jolt
+        id: paired-jolt
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: Loris-EPFL/jolt
+          ref: akita-query-relation-accumulation-v8
+          path: jolt
+          persist-credentials: false
       - uses: actions-rust-lang/setup-rust-toolchain@ecabd13d1c56bd1345c230e542e9144811ad706f # v2.0.0
+        with:
+          rust-src-dir: akita
       - name: Install Intel Software Development Emulator
         run: |
           curl --fail --location --silent --show-error --output /tmp/intel-sde.tar.xz https://downloadmirror.intel.com/924984/sde-external-10.13.1-2026-07-28-lin.tar.xz
@@ -75,9 +123,24 @@ jobs:
   wasm-serialization:
     name: Wasm serialization check
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: akita
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: akita
+      - name: Checkout paired jolt
+        id: paired-jolt
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: Loris-EPFL/jolt
+          ref: akita-query-relation-accumulation-v8
+          path: jolt
+          persist-credentials: false
       - uses: actions-rust-lang/setup-rust-toolchain@ecabd13d1c56bd1345c230e542e9144811ad706f # v2.0.0
+        with:
+          rust-src-dir: akita
       - name: Add wasm target
         run: rustup target add wasm32-unknown-unknown
       - name: Check serialization on wasm

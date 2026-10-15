@@ -13,7 +13,7 @@ use jolt_field::{CanonicalEncoding, ExtField, Field, Ring};
 
 use crate::prepared_cache::TerminalNttCache;
 
-fn sparse_challenge_mul_accumulate<F, const D: usize>(
+pub(super) fn sparse_challenge_mul_accumulate<F, const D: usize>(
     challenge: &SparseChallenge,
     value: &CyclotomicRing<F, D>,
     destination: &mut CyclotomicRing<F, D>,

@@ -18,6 +18,8 @@ pub enum RelationQuotientPlan {
     QuotientLift { quotient_depth: NonZeroUsize },
     /// Reduced relations carry no quotient metadata or rows.
     ReducedEvaluation,
+    /// All native coefficient equations, with reduction inside their linear map.
+    ExactCoefficientRows,
 }
 
 impl RelationQuotientPlan {
@@ -42,6 +44,7 @@ impl RelationQuotientPlan {
                 ))
             }
             RingRelationMode::ReducedEvaluation => Ok(Self::ReducedEvaluation),
+            RingRelationMode::ExactCoefficientRows => Ok(Self::ExactCoefficientRows),
         }
     }
 
@@ -50,6 +53,10 @@ impl RelationQuotientPlan {
             (self, mode),
             (Self::QuotientLift { .. }, RingRelationMode::QuotientLift)
                 | (Self::ReducedEvaluation, RingRelationMode::ReducedEvaluation)
+                | (
+                    Self::ExactCoefficientRows,
+                    RingRelationMode::ExactCoefficientRows
+                )
         ) {
             Ok(())
         } else {
@@ -62,7 +69,7 @@ impl RelationQuotientPlan {
     fn quotient_depth(self) -> Option<NonZeroUsize> {
         match self {
             Self::QuotientLift { quotient_depth } => Some(quotient_depth),
-            Self::ReducedEvaluation => None,
+            Self::ReducedEvaluation | Self::ExactCoefficientRows => None,
         }
     }
 }
@@ -231,6 +238,9 @@ impl TailSink for MaterializingTailSink {
                 }
             }
             RelationQuotientPlan::ReducedEvaluation => RelationQuotientLayout::ReducedEvaluation,
+            RelationQuotientPlan::ExactCoefficientRows => {
+                RelationQuotientLayout::ExactCoefficientRows
+            }
         };
         Ok(MaterializedWitnessTail {
             compression_layers: self.compression_layers,

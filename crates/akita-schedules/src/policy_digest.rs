@@ -7,6 +7,7 @@ use crate::{PlannerPolicy, RingDimensionScheduleMode};
 /// Fixed-width digest of every planner-policy field that affects an admitted row.
 pub fn policy_digest(policy: &PlannerPolicy) -> [u8; 32] {
     let PlannerPolicy {
+        opening_family,
         cost_model,
         selective_l2_response_model,
         selection_policy,
@@ -29,6 +30,15 @@ pub fn policy_digest(policy: &PlannerPolicy) -> [u8; 32] {
     } = *policy;
     let mut bytes = Vec::new();
     bytes.extend_from_slice(b"AKITA-PLANNER-POLICY-V1");
+    match opening_family {
+        crate::PlannerOpeningFamily::Legacy => {}
+        crate::PlannerOpeningFamily::FullRingE2OuterDirect => bytes.extend_from_slice(
+            b"FullRingScalarExtension/E2Nonresidue5/RawCoefficientV1/OuterDirect",
+        ),
+        crate::PlannerOpeningFamily::FullRingE2InnerRecursive => bytes.extend_from_slice(
+            b"FullRingScalarExtension/E2Nonresidue5/RawCoefficientV1/CompactInnerT16ThreeShrink",
+        ),
+    }
     write_u64(&mut bytes, sis_modulus_profile_tag(sis_modulus_profile));
     write_u64(&mut bytes, u64::from(sis_security_policy.tag()));
     bytes.extend_from_slice(&sis_table_digest.0);

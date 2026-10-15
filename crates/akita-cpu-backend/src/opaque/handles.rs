@@ -11,6 +11,7 @@ pub struct CpuWitnessBuildHandle<F: Field + CanonicalEncoding> {
     pub(crate) v: akita_types::RingVec<F>,
     pub(crate) level: akita_params::CommittedGroupParams,
     pub(crate) opening_batch: akita_params::OpeningClaimsLayout,
+    pub(crate) full_ring_context: Option<Box<dyn std::any::Any + Send + Sync>>,
 }
 
 /// Owner, proof, setup, level, and operation identity attached to CPU state.
@@ -20,6 +21,7 @@ pub(crate) struct OperationBinding {
     scope_id: ProofScopeId,
     setup_digest: [u8; 32],
     fold_level: u32,
+    occurrence: u32,
     operation_id: u128,
     group_index: Option<usize>,
     lease: crate::opaque::ScopeLease,
@@ -44,6 +46,7 @@ impl PartialEq for OperationBinding {
             && self.scope_id == other.scope_id
             && self.setup_digest == other.setup_digest
             && self.fold_level == other.fold_level
+            && self.occurrence == other.occurrence
             && self.operation_id == other.operation_id
             && self.group_index == other.group_index
     }
@@ -68,6 +71,13 @@ impl OperationBinding {
     }
     pub(crate) const fn fold_level(&self) -> u32 {
         self.fold_level
+    }
+    pub(crate) const fn occurrence(&self) -> u32 {
+        self.occurrence
+    }
+    pub(crate) fn with_occurrence(mut self, occurrence: u32) -> Self {
+        self.occurrence = occurrence;
+        self
     }
     pub(crate) fn with_group(mut self, group_index: Option<usize>) -> Self {
         self.group_index = group_index;
@@ -116,6 +126,7 @@ impl OperationBinding {
             scope_id,
             setup_digest,
             fold_level,
+            occurrence: 0,
             operation_id,
             group_index: None,
             lease,
@@ -144,6 +155,7 @@ impl OperationBinding {
             || self.scope_id != expected.scope_id
             || self.setup_digest != expected.setup_digest
             || self.fold_level != expected.fold_level
+            || self.occurrence != expected.occurrence
         {
             return Err(AkitaError::InvalidInput(
                 "opaque handle belongs to a different consumer, scope, setup, or level".into(),

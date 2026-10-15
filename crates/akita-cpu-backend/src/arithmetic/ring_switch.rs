@@ -128,10 +128,7 @@ pub(crate) fn relation_b_a_rows<F: Field + CanonicalEncoding, E, const D: usize>
     if backend.ntt_operation_uses_cache(NttOperationCluster::RingSwitch, extent) {
         return cached_b_a_rows(prepared, t_hat, z, z_inf_norm, plan);
     }
-    let view = prepared
-        .expanded
-        .shared_matrix()
-        .ring_view::<D>(1, extent)?;
+    let view = prepared.matrix().ring_view::<D>(1, extent)?;
     fused_split_eq_quotients_streamed_prover_bounds(
         view.as_slice(),
         plan.n_b,
@@ -168,10 +165,7 @@ where
         let b_a_extent = fused_quotient_matrix_extent(plan.n_b, source.t_hat.len(), 0, 0)?;
         let stream_extent = d_extent.max(b_a_extent);
         if !self.ntt_operation_uses_cache(NttOperationCluster::RingSwitch, stream_extent) {
-            let view = prepared
-                .expanded
-                .shared_matrix()
-                .ring_view::<D>(1, stream_extent)?;
+            let view = prepared.matrix().ring_view::<D>(1, stream_extent)?;
             let d_rows = if plan.n_d == 0 {
                 DigitRelationRows {
                     negacyclic: Vec::new(),

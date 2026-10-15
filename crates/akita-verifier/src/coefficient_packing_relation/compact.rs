@@ -342,6 +342,28 @@ fn geometric_axes<E: Field>(
     }
     Ok(axes)
 }
+/// Factor the 26 physical digit slots, not the 32-slot virtual query cube.
+pub(super) fn original_ram_digit_axes<E: Field>(
+    point: &[E; 5],
+    stride: usize,
+) -> Result<(Vec<EqPairTensorAxis<E>>, [E; 3]), AkitaError> {
+    let axes = [4usize, 3, 1]
+        .into_iter()
+        .map(|bits| {
+            EqPairTensorAxis::bit_product(
+                0,
+                stride,
+                point[..bits].iter().map(|&u| [E::one() - u, u]).collect::<std::sync::Arc<[_]>>(),
+            )
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let high = [
+        E::one() - point[4],
+        point[4] * (E::one() - point[3]),
+        point[4] * point[3] * (E::one() - point[2]) * (E::one() - point[1]),
+    ];
+    Ok((axes, high))
+}
 
 fn reserve_families<T>(families: &mut Vec<T>, additional: usize) -> Result<(), AkitaError> {
     let total = families
@@ -635,11 +657,11 @@ pub(super) fn prepare_compact_factors<F: Field, E: Field>(
         }
     }
 
-    let witness_digit_segments = dyadic_segments(0..group.witness_gadget().len())?;
+    let witness_digit_segments = dyadic_segments(0..group.source_opening_weights().len())?;
     let fold_digit_segments = dyadic_segments(0..group.fold_gadget().len())?;
     let mut packing_z_families = Vec::new();
     let position_stride = group
-        .witness_gadget()
+        .source_opening_weights()
         .len()
         .checked_mul(group.fold_gadget().len())
         .and_then(|count| count.checked_mul(d_a))
@@ -649,12 +671,24 @@ pub(super) fn prepare_compact_factors<F: Field, E: Field>(
         .len()
         .checked_mul(d_a)
         .ok_or_else(|| AkitaError::InvalidSetup("packing-Z witness stride overflow".into()))?;
-    let witness_digit_axes = geometric_axes(
-        0,
-        witness_stride,
-        group.witness_gadget(),
-        &witness_digit_segments,
-    )?;
+    // Raw Eq weights are not geometric and may have d_0 = 0. Factor each
+    // physical dyadic segment directly, without normalizing or dividing.
+    let (witness_digit_axes, witness_segment_weights) =
+        if let Some(digit_point) = group.prepared_point().source_digit_point() {
+            if witness_digit_segments != [0..16, 16..24, 24..26] {
+                return Err(AkitaError::InvalidProof);
+            }
+            let (axes, high) = original_ram_digit_axes(digit_point, witness_stride)?;
+            (axes, Some(high))
+        } else {
+            let axes = geometric_axes(
+                0,
+                witness_stride,
+                group.source_opening_weights(),
+                &witness_digit_segments,
+            )?;
+            (axes, None)
+        };
     let fold_digit_axes = geometric_axes(0, d_a, group.fold_gadget(), &fold_digit_segments)?;
     let packing_alpha_axis = geometric_axis(0, kh, group.alpha_powers(), s)?;
     let unit_count = group
@@ -672,25 +706,26 @@ pub(super) fn prepare_compact_factors<F: Field, E: Field>(
         .witness_layout()
         .units_for_group(group.group_index())?
     {
-        for (witness_segment, witness_axis) in
-            witness_digit_segments.iter().zip(&witness_digit_axes)
+        for (segment_index, (witness_segment, witness_axis)) in witness_digit_segments
+            .iter()
+            .zip(&witness_digit_axes)
+            .enumerate()
         {
+            let witness_weight = match &witness_segment_weights {
+                Some(high) => high.get(segment_index),
+                None => group.source_opening_weights().get(witness_segment.start),
+            }.copied().ok_or(AkitaError::InvalidProof)?;
             for (fold_segment, fold_axis) in fold_digit_segments.iter().zip(&fold_digit_axes) {
                 let physical_start = unit.z_coefficient_index(
                     d_a,
                     group.prepared_point().num_positions_per_block(),
-                    group.witness_gadget().len(),
+                    group.source_opening_weights().len(),
                     group.fold_gadget().len(),
                     0,
                     witness_segment.start,
                     fold_segment.start,
                     0,
                 )?;
-                let witness_weight = group
-                    .witness_gadget()
-                    .get(witness_segment.start)
-                    .copied()
-                    .ok_or(AkitaError::InvalidProof)?;
                 let fold_weight = group
                     .fold_gadget()
                     .get(fold_segment.start)

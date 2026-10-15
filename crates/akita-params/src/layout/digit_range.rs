@@ -125,6 +125,38 @@ impl Valid for PhysicalL2NormProofWireShape {
     }
 }
 
+/// Full-ring base32 range protocol. This is not the legacy quartic-leaf
+/// Eq-factored codec: every round sends all coefficients, including constant.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct FullRingRangePlan;
+
+impl FullRingRangePlan {
+    pub const PRODUCT_ARITIES: [usize; 2] = [4, 4];
+    pub const NODE_COUNTS: [usize; 3] = [1, 4, 16];
+    pub const ROUND_DEGREES: [usize; 2] = [5, 5];
+    pub const FUSED_DEGREE: usize = 3;
+
+    /// Independent normalized affine mixing, never powers of one challenge.
+    pub fn affine_weights<E: Field>(xi: [E; 3]) -> [E; 4] {
+        [E::one(), xi[0], xi[1], xi[2]]
+    }
+
+    /// Every final factor is tied to the same virtual range-table evaluation.
+    pub fn affine_leaves<E: Field + Ring>(svirt: E) -> [E; 16] {
+        std::array::from_fn(|k| svirt - E::from_i64((k * (k + 1)) as i64))
+    }
+
+    /// Two degree-five product checks and the degree-three fused check.
+    pub fn full_coefficient_count(rounds: usize) -> Result<usize, AkitaError> {
+        rounds.checked_mul(16).ok_or_else(|| {
+            AkitaError::InvalidSetup("full-ring sumcheck message count overflow".into())
+        })
+    }
+
+    /// Four quarter nodes, the one virtual leaf and the one pending W value.
+    pub const ENDPOINT_VALUES: usize = 6;
+}
+
 /// Checked topology for the balanced digit range proof.
 ///
 /// This is the single authority for the supported basis, product-stage

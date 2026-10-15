@@ -454,11 +454,15 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-
     use akita_params::{PolynomialGroupLayout, EXTENSION_OPENING_REDUCTION_DEGREE};
-    use akita_sumcheck::SumcheckInstanceProver;
-    use akita_transcript::{new_prover_channel, new_verifier_channel};
-    use jolt_field::{FpExt4, Prime32Offset99, Zero};
+    use akita_sumcheck::{SumcheckInstanceProver, SumcheckRole};
+    use akita_transcript::{
+        new_prover_channel, new_verifier_channel, IndexedLimits, InstalledContext,
+        InstalledEvent, InstalledRegistry, ProtocolContextRecord, ProtocolMessageKind,
+        ProtocolSiteId,
+        SITE_FAMILY_EXTENSION_OPENING_REDUCTION, SITE_FAMILY_SUMCHECK,
+    };
+    use jolt_field::{CanonicalBytes, FpExt4, Prime32Offset99, Zero};
     use jolt_poly::UnivariatePoly;
 
     type F = Prime32Offset99;
@@ -472,126 +476,151 @@ mod tests {
         fn num_rounds(&self) -> usize {
             self.rounds
         }
-
         fn degree_bound(&self) -> usize {
             EXTENSION_OPENING_REDUCTION_DEGREE
         }
-
         fn input_claim(&self) -> E {
             E::zero()
         }
-
         fn compute_round_univariate(&mut self, _round: usize, _claim: E) -> UnivariatePoly<E> {
             UnivariatePoly::new(vec![E::zero(); EXTENSION_OPENING_REDUCTION_DEGREE + 1])
         }
-
         fn ingest_challenge(&mut self, _round: usize, _challenge: E) {}
     }
 
     fn extension_point(num_vars: usize, offset: u64) -> Vec<E> {
-        (0..num_vars)
-            .map(|index| {
-                let value = offset + index as u64;
-                E::from_base_slice(&[
-                    F::from_u64(value + 1),
-                    F::from_u64(value + 2),
-                    F::from_u64(value + 3),
-                    F::from_u64(value + 4),
-                ])
-            })
-            .collect()
+        (0..num_vars).map(|index| {
+            let value = offset + index as u64;
+            E::from_base_slice(&[
+                F::from_u64(value + 1), F::from_u64(value + 2),
+                F::from_u64(value + 3), F::from_u64(value + 4),
+            ])
+        }).collect()
+    }
+
+    fn eor_registry(level: u32, rounds: usize, split_bits: usize, width: usize)
+        -> InstalledRegistry
+    {
+        let message = |site: ProtocolSiteId, kind: ProtocolMessageKind, extensions: usize| {
+            let atoms = extensions * <E as ExtField<F>>::DEGREE;
+            InstalledEvent::Message(ProtocolContextRecord::new(
+                site.to_bytes(), kind as u32, atoms as u64,
+                (atoms * F::NUM_BYTES) as u64, 0,
+            ))
+        };
+        let request = |ordinal, site| InstalledEvent::Request(
+            akita_transcript::field_request_spec::<F, E>(ordinal, site).unwrap(),
+        );
+        let eor_site = |stage| ProtocolSiteId {
+            family: SITE_FAMILY_EXTENSION_OPENING_REDUCTION, level, stage,
+            ..ProtocolSiteId::default()
+        };
+        let mut events = vec![
+            message(eor_site(1), ProtocolMessageKind::PublicValue, 1),
+            message(eor_site(2), ProtocolMessageKind::ProofAtoms, width),
+        ];
+        let mut ordinal = 0;
+        for group in 0..split_bits {
+            let mut site = akita_params::GrindingSite::ExtensionOpeningPoint { level }.site_id(0);
+            site.group = group as u32;
+            events.push(request(ordinal, site));
+            ordinal += 1;
+        }
+        let protocol = akita_params::SumcheckProtocol::ExtensionOpeningReduction;
+        let sumcheck_site = |round, role: SumcheckRole| ProtocolSiteId {
+            family: SITE_FAMILY_SUMCHECK, invocation: protocol.tag(), level, round,
+            detail: role as u32, ..ProtocolSiteId::default()
+        };
+        events.push(message(sumcheck_site(0, SumcheckRole::Claim),
+            ProtocolMessageKind::PublicValue, 1));
+        for round in 0..rounds {
+            let round = round as u32;
+            events.push(message(sumcheck_site(round, SumcheckRole::RoundBody),
+                ProtocolMessageKind::ProofAtoms, EXTENSION_OPENING_REDUCTION_DEGREE));
+            let site = akita_params::GrindingSite::SumcheckRound {
+                protocol, level, stage: 0, round,
+            }.site_id(0);
+            events.push(request(ordinal, site));
+            ordinal += 1;
+        }
+        events.push(message(eor_site(3), ProtocolMessageKind::ProofAtoms, 1));
+        let limits = IndexedLimits {
+            max_context_bytes: 1 << 20, max_prefix_bytes: 1 << 20,
+            max_key_bytes: 1 << 20, max_descriptor_bytes: 1 << 20,
+            max_answer_bytes: 1 << 20, max_result_bytes: 1 << 20,
+            max_proof_bytes: 1 << 20,
+        };
+        InstalledRegistry::new(0x454f_52, events, limits).unwrap()
     }
 
     #[test]
     fn eor_verifier_replays_stream_and_checks_eof() {
         const NUM_VARS: usize = 12;
         let level = 1;
-        let opening_batch =
-            OpeningClaimsLayout::from_groups(vec![PolynomialGroupLayout::singleton(NUM_VARS)])
-                .unwrap();
+        let opening_batch = OpeningClaimsLayout::from_groups(vec![
+            PolynomialGroupLayout::singleton(NUM_VARS),
+        ]).unwrap();
         let group_point = extension_point(NUM_VARS, 10);
         let group_points = [group_point.as_slice()];
         let openings = vec![E::zero()];
         let (split_bits, width) = tensor_opening_split::<F, E>().unwrap();
         let rounds = NUM_VARS - split_bits;
         let partials = vec![E::zero(); width];
-        let plan = {
-            let challenge_order =
-                akita_params::ChallengeFieldOrder::from_full_capacity(128).unwrap();
-            let mut runs = vec![akita_params::GrindingRun::proof_of_work(
-                akita_params::GrindingSite::ExtensionOpeningPoint { level },
-                1,
-                challenge_order,
-            )
-            .unwrap()];
-            for round in 0..rounds {
-                runs.push(
-                    akita_params::GrindingRun::proof_of_work(
-                        akita_params::GrindingSite::SumcheckRound {
-                            protocol: akita_params::SumcheckProtocol::ExtensionOpeningReduction,
-                            level,
-                            stage: 0,
-                            round: u32::try_from(round).unwrap(),
-                        },
-                        1,
-                        challenge_order,
-                    )
-                    .unwrap(),
-                );
-            }
-            akita_params::GrindingPlan::new(runs, challenge_order).unwrap()
-        };
-
-        let state = new_prover_channel(b"native-eor-verifier", b"fixture").unwrap();
-        let mut prover = akita_types::ProverGrinding::new(state, &plan);
+        let challenge_order = akita_params::ChallengeFieldOrder::from_full_capacity(128).unwrap();
+        let mut runs = vec![akita_params::GrindingRun::proof_of_work(
+            akita_params::GrindingSite::ExtensionOpeningPoint { level }, 1, challenge_order,
+        ).unwrap()];
+        for round in 0..rounds {
+            runs.push(akita_params::GrindingRun::proof_of_work(
+                akita_params::GrindingSite::SumcheckRound {
+                    protocol: akita_params::SumcheckProtocol::ExtensionOpeningReduction,
+                    level, stage: 0, round: round as u32,
+                }, 1, challenge_order,
+            ).unwrap());
+        }
+        let plan = akita_params::GrindingPlan::new(runs, challenge_order).unwrap();
+        let registry = eor_registry(level, rounds, split_bits, width);
+        let context = InstalledContext::new(&registry, b"native-eor-verifier", b"fixture").unwrap();
+        let mut prover = akita_types::ProverGrinding::new(
+            new_prover_channel(&context).unwrap(), &plan,
+        );
         akita_types::eor_prefix::<F, E, _>(
-            &mut prover,
-            &opening_batch,
-            &openings,
-            partials.clone(),
-            level,
-        )
-        .unwrap();
+            &mut prover, &opening_batch, &openings, partials, level,
+        ).unwrap();
         let mut sumcheck = ZeroEorProver { rounds };
         let mut channel = akita_types::GrindingSumcheckProver::<F, E>::new(
-            &mut prover,
-            akita_params::SumcheckProtocol::ExtensionOpeningReduction,
-            level,
-            0,
+            &mut prover, akita_params::SumcheckProtocol::ExtensionOpeningReduction, level, 0,
         );
-        let shape =
-            akita_sumcheck::SumcheckShape::new(sumcheck.num_rounds(), sumcheck.degree_bound())
-                .unwrap();
+        let shape = akita_sumcheck::SumcheckShape::new(
+            sumcheck.num_rounds(), sumcheck.degree_bound(),
+        ).unwrap();
         akita_sumcheck::prove_sumcheck::<F, E, _, _>(
             &mut akita_sumcheck::InfallibleSumcheck(&mut sumcheck),
-            &mut channel,
-            shape,
-            akita_types::EOR_SUMCHECK_INVOCATION,
-        )
-        .unwrap();
+            &mut channel, shape, akita_types::EOR_SUMCHECK_INVOCATION,
+        ).unwrap();
         akita_types::eor_final_claims::<F, E, _>(
-            &mut prover,
-            &opening_batch,
-            &mut [E::zero()],
-            level,
-        )
-        .unwrap();
+            &mut prover, &opening_batch, &mut [E::zero()], level,
+        ).unwrap();
         let proof = prover.finish().unwrap();
 
-        let state = new_verifier_channel(b"native-eor-verifier", b"fixture", &proof).unwrap();
-        let mut verifier = akita_types::VerifierGrinding::new(state, &plan);
+        let mut verifier = akita_types::VerifierGrinding::new(
+            new_verifier_channel(&context, &proof).unwrap(), &plan,
+        );
         let replay = verify_eor_sumcheck::<F, E>(
-            &group_points,
-            &openings,
-            &opening_batch,
-            true,
-            &mut verifier,
-            level,
-        )
-        .unwrap()
-        .unwrap();
+            &group_points, &openings, &opening_batch, true, &mut verifier, level,
+        ).unwrap().unwrap();
         assert_eq!(replay.rho.len(), rounds);
         assert_eq!(replay.final_claims, vec![E::zero()]);
         verifier.finish().unwrap();
+
+        let mut trailing_proof = proof;
+        trailing_proof.push(0);
+        let mut verifier = akita_types::VerifierGrinding::new(
+            new_verifier_channel(&context, &trailing_proof).unwrap(), &plan,
+        );
+        verify_eor_sumcheck::<F, E>(
+            &group_points, &openings, &opening_batch, true, &mut verifier, level,
+        ).unwrap().unwrap();
+        assert!(verifier.finish().is_err());
     }
 }

@@ -82,6 +82,7 @@ pub struct PreparedRelationGroupPublic<F: Field, E: Field> {
     kind: akita_types::OpeningFamily<
         akita_types::PreparedOpeningPoint<F, E>,
         akita_types::PreparedSubringCoefficientPackingPoint<E>,
+        akita_types::full_ring::FullRingRawPoint<E>,
     >,
     scalar_openings: Vec<E>,
 }
@@ -91,6 +92,7 @@ impl<F: Field, E: Field> PreparedRelationGroupPublic<F, E> {
         kind: akita_types::OpeningFamily<
             akita_types::PreparedOpeningPoint<F, E>,
             akita_types::PreparedSubringCoefficientPackingPoint<E>,
+            akita_types::full_ring::FullRingRawPoint<E>,
         >,
         scalar_openings: Vec<E>,
     ) -> Self {
@@ -105,6 +107,7 @@ impl<F: Field, E: Field> PreparedRelationGroupPublic<F, E> {
     ) -> &akita_types::OpeningFamily<
         akita_types::PreparedOpeningPoint<F, E>,
         akita_types::PreparedSubringCoefficientPackingPoint<E>,
+        akita_types::full_ring::FullRingRawPoint<E>,
     > {
         &self.kind
     }
@@ -118,7 +121,8 @@ impl<F: Field, E: Field> PreparedRelationGroupPublic<F, E> {
         &self,
     ) -> Option<&akita_types::PreparedSubringCoefficientPackingPoint<E>> {
         match &self.kind {
-            akita_types::OpeningFamily::EvaluationTrace(_) => None,
+            akita_types::OpeningFamily::EvaluationTrace(_)
+            | akita_types::OpeningFamily::FullRingScalarExtension(_) => None,
             akita_types::OpeningFamily::SubringCoefficientPacking(point) => Some(point),
         }
     }

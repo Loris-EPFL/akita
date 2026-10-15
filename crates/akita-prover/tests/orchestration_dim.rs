@@ -6,7 +6,7 @@ use akita_config::proof_optimized::{fp128, fp64};
 use akita_params::ScheduleLookupKey;
 use akita_params::{
     validate_schedule_ring_dims, CommittedGroupBatchProfile, GroupCommitPhaseParams,
-    OpeningClaimsLayout, PolynomialGroupLayout,
+    OpeningClaimsLayout, PolynomialGroupLayout, SourceOpeningView,
 };
 
 #[test]
@@ -27,7 +27,7 @@ fn batched_selection_preserves_typed_schedule_topology() {
         precommitteds: Vec::new(),
     };
     let selected = catalog
-        .resolve_profiles(&profiles)
+        .resolve_profiles(&profiles, &[SourceOpeningView::Decoded])
         .expect("selected schedule");
     selected
         .validate_opening_layout(&batch)

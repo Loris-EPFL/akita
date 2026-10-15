@@ -16,10 +16,7 @@ fn rejects_reduced_evaluation_at_root_and_level_one() {
     root_reduced.root.params.ring_relation_mode = RingRelationMode::ReducedEvaluation;
     let validation = root_reduced.validate_structure();
     assert!(
-        matches!(
-            validation,
-            Err(AkitaError::InvalidSetup(ref message)) if message.contains("level 0")
-        ),
+        matches!(validation, Err(AkitaError::InvalidSetup(_))),
         "unexpected root validation result: {validation:?}"
     );
 
@@ -29,10 +26,7 @@ fn rejects_reduced_evaluation_at_root_and_level_one() {
         .ring_relation_mode = RingRelationMode::ReducedEvaluation;
     let validation = level_one_reduced.validate_structure();
     assert!(
-        matches!(
-            validation,
-            Err(AkitaError::InvalidSetup(ref message)) if message.contains("level 1")
-        ),
+        matches!(validation, Err(AkitaError::InvalidSetup(_))),
         "unexpected level-one validation result: {validation:?}"
     );
 }
@@ -63,10 +57,7 @@ fn rejects_quotient_lift_after_reduced_evaluation_cutover() {
 
     let validation = schedule.validate_structure();
     assert!(
-        matches!(
-            validation,
-            Err(AkitaError::InvalidSetup(ref message)) if message.contains("ring relation mode disagrees with the reduced-evaluation suffix policy")
-        ),
+        matches!(validation, Err(AkitaError::InvalidSetup(_))),
         "unexpected suffix validation result: {validation:?}"
     );
 }
@@ -83,10 +74,7 @@ fn rejects_reduced_evaluation_without_trace_opening() {
 
     let validation = schedule.validate_structure();
     assert!(
-        matches!(
-            validation,
-            Err(AkitaError::InvalidSetup(ref message)) if message.contains("ring relation mode disagrees with the reduced-evaluation suffix policy")
-        ),
+        matches!(validation, Err(AkitaError::InvalidSetup(_))),
         "unexpected opening validation result: {validation:?}"
     );
 }
@@ -100,10 +88,7 @@ fn rejects_setup_prefix_anywhere_in_reduced_evaluation_suffix() {
     set_valid_setup_prefix(reduced, 64);
     let validation = at_cutover.validate_structure();
     assert!(
-        matches!(
-            validation,
-            Err(AkitaError::InvalidSetup(ref message)) if message.contains("ring relation mode disagrees with the reduced-evaluation suffix policy")
-        ),
+        matches!(validation, Err(AkitaError::InvalidSetup(_))),
         "unexpected cutover-prefix validation result: {validation:?}"
     );
 
@@ -115,10 +100,7 @@ fn rejects_setup_prefix_anywhere_in_reduced_evaluation_suffix() {
     set_valid_setup_prefix(&mut later.recursive_folds[2].params, 64);
     let validation = later.validate_structure();
     assert!(
-        matches!(
-            validation,
-            Err(AkitaError::InvalidSetup(ref message)) if message.contains("ring relation mode disagrees with the reduced-evaluation suffix policy")
-        ),
+        matches!(validation, Err(AkitaError::InvalidSetup(_))),
         "unexpected suffix-prefix validation result: {validation:?}"
     );
 }

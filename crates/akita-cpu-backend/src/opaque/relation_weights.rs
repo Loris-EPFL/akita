@@ -325,6 +325,7 @@ where
         let ring_multiplier_point = match group_source.opening {
             OpeningFamily::EvaluationTrace(point) => Some(point),
             OpeningFamily::SubringCoefficientPacking(()) => None,
+            OpeningFamily::FullRingScalarExtension(never) => match never {},
         };
         let challenges = group_source.challenges;
         let total_blocks = challenges.len();

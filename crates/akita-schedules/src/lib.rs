@@ -20,9 +20,9 @@ pub use policy_digest::policy_digest;
 pub use resolve::ResolvedScheduleRow;
 pub use runtime::{
     expanded_schedule_proof_bound, expanded_schedule_proof_estimate_bytes, validate_policy,
-    PlannerCostModelId, PlannerPolicy, RecursiveSetupSearchPolicy, RecursiveSplitSearchPolicy,
-    RingDimensionScheduleMode, SelectionPolicyId, SelectiveL2ResponseModelId,
-    ADAPTIVE_SEARCH_LEVELS,
+    PlannerCostModelId, PlannerOpeningFamily, PlannerPolicy, RecursiveSetupSearchPolicy,
+    RecursiveSplitSearchPolicy, RingDimensionScheduleMode, SelectionPolicyId,
+    SelectiveL2ResponseModelId, ADAPTIVE_SEARCH_LEVELS,
 };
 
 /// Shared schedule-construction primitives used by offline search and artifact validation.

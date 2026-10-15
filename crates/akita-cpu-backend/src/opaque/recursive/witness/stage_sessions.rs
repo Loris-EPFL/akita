@@ -351,7 +351,7 @@ where
             ));
         }
         let weights =
-            crate::opaque::relation_weights::compile_stage2_weights(&prepared.expanded, &plan)?;
+            crate::opaque::relation_weights::compile_stage2_weights(prepared.expanded()?, &plan)?;
         let additional = (!weights.linear.is_empty() || !weights.binary_intervals.is_empty())
             .then(|| {
                 relation_range_image::AdditionalRelationTerms::new(

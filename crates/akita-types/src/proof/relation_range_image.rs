@@ -546,7 +546,8 @@ impl RelationRangeImagePlan {
                     ));
                 }
             }
-            akita_params::RelationQuotientLayout::ReducedEvaluation => {}
+            akita_params::RelationQuotientLayout::ReducedEvaluation
+            | akita_params::RelationQuotientLayout::ExactCoefficientRows => {}
         }
 
         Ok(Self {

@@ -30,6 +30,34 @@ pub struct Challenges {
 }
 
 impl Challenges {
+    /// Checked native full-ring shell conversion without a transcript dependency.
+    /// Input order is preserved; every coordinate is exactly the (24,16) shell.
+    pub fn from_full_ring_shell_coefficients<'a>(
+        shells: impl ExactSizeIterator<Item = &'a [i8; 128]>,
+    ) -> Result<Self, AkitaError> {
+        let blocks = shells.len();
+        let mut challenges = Vec::with_capacity(blocks);
+        for coefficients in shells {
+            let mut challenge = SparseChallenge {
+                positions: Default::default(), coeffs: Default::default(),
+            };
+            let mut ones = 0;
+            let mut twos = 0;
+            for (position, &coefficient) in coefficients.iter().enumerate() {
+                match coefficient.unsigned_abs() {
+                    0 => continue,
+                    1 => ones += 1,
+                    2 => twos += 1,
+                    _ => return Err(AkitaError::InvalidProof),
+                }
+                challenge.positions.push(position as u32);
+                challenge.coeffs.push(coefficient);
+            }
+            if ones != 24 || twos != 16 { return Err(AkitaError::InvalidProof); }
+            challenges.push(challenge);
+        }
+        Self::from_sparse(challenges, blocks, 1)
+    }
     /// Construct challenges from a sampled vector and its claim/block layout.
     ///
     /// # Errors

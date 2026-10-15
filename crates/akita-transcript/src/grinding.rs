@@ -1,4 +1,4 @@
-//! Akita proof-of-work policy shared by Spongefish replay.
+//! Akita's bounded proof-of-work policy shared by the indexed v8 channel.
 
 use std::num::NonZeroU8;
 
@@ -30,23 +30,25 @@ pub fn grinding_predicate_accepts(
 pub(crate) fn search_grinding_nonce_with(
     grind_bits: u8,
     nonce_bits: u8,
-    mut predicate_for_candidate: impl FnMut(u32) -> Option<[u8; GRINDING_PREDICATE_LEN]>,
-) -> Option<(u32, [u8; GRINDING_PREDICATE_LEN])> {
+    mut predicate_for_candidate: impl FnMut(u32) -> Result<[u8; GRINDING_PREDICATE_LEN], akita_error::AkitaError>,
+) -> Result<Option<(u32, [u8; GRINDING_PREDICATE_LEN])>, akita_error::AkitaError> {
+    use akita_error::AkitaError;
     let Some(grind_bits_nonzero) = NonZeroU8::new(grind_bits) else {
-        return (nonce_bits == 0).then_some((u32::default(), [0; GRINDING_PREDICATE_LEN]));
+        return if nonce_bits == 0 { Ok(Some((0, [0; GRINDING_PREDICATE_LEN]))) }
+            else { Err(AkitaError::InvalidProof) };
     };
-    if grind_bits > MAX_GRINDING_BITS
-        || nonce_bits != grind_bits.checked_add(GRINDING_NONCE_SLACK_BITS)?
-        || nonce_bits > u32::BITS as u8
-    {
-        return None;
+    if grind_bits > MAX_GRINDING_BITS || nonce_bits != grind_bits + GRINDING_NONCE_SLACK_BITS {
+        return Err(AkitaError::InvalidProof);
     }
-    let attempts = 1u64.checked_shl(u32::from(nonce_bits))?;
-    (0..attempts).find_map(|candidate| {
-        let counter = u32::try_from(candidate).ok()?;
+    // The checked policy gives nonce_bits<=32, so every candidate fits u32.
+    for candidate in 0..(1u64 << nonce_bits) {
+        let counter = candidate as u32;
         let predicate = predicate_for_candidate(counter)?;
-        grinding_predicate_accepts(&predicate, grind_bits_nonzero).then_some((counter, predicate))
-    })
+        if grinding_predicate_accepts(&predicate, grind_bits_nonzero) {
+            return Ok(Some((counter, predicate)));
+        }
+    }
+    Ok(None)
 }
 
 #[cfg(test)]
@@ -69,16 +71,22 @@ mod tests {
     fn bounded_search_enforces_canonical_width_and_exhaustion() {
         assert_eq!(
             search_grinding_nonce_with(0, 0, |_| unreachable!()),
-            Some((0, [0; GRINDING_PREDICATE_LEN]))
+            Ok(Some((0, [0; GRINDING_PREDICATE_LEN])))
         );
-        assert_eq!(search_grinding_nonce_with(1, 7, |_| Some([0; 32])), None);
+        assert!(search_grinding_nonce_with(1, 7, |_| Ok([0; 32])).is_err());
         assert_eq!(
-            search_grinding_nonce_with(1, 8, |_| Some([u8::MAX; 32])),
-            None
+            search_grinding_nonce_with(1, 8, |_| Ok([u8::MAX; 32])),
+            Ok(None)
         );
         assert_eq!(
-            search_grinding_nonce_with(1, 8, |_| Some([0; 32])),
-            Some((0, [0; 32]))
+            search_grinding_nonce_with(1, 8, |_| Ok([0; 32])),
+            Ok(Some((0, [0; 32])))
         );
+        let mut probes = 0;
+        assert!(search_grinding_nonce_with(1, 8, |_| {
+            probes += 1;
+            Err(akita_error::AkitaError::InvalidProof)
+        }).is_err());
+        assert_eq!(probes, 1, "decoder failure cannot be treated as a losing nonce");
     }
 }

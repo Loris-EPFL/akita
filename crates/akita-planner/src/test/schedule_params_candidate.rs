@@ -616,10 +616,7 @@ fn root_packing_candidates_use_adversarial_linf_and_exact_d_width() {
         );
     }
     let frozen_group = synthetic_profile(key.final_group, &candidates[0].0);
-    let grouped_key = ScheduleLookupKey {
-        final_group: key.final_group,
-        precommitteds: vec![frozen_group],
-    };
+    let grouped_key = ScheduleLookupKey::decoded(key.final_group, vec![frozen_group]);
     let precommit_opening =
         PlannerOpeningCandidate::coefficient_packing(0, policy.claim_ext_degree, dimensions, 128)
             .unwrap()
@@ -732,10 +729,7 @@ fn root_packing_candidates_use_adversarial_linf_and_exact_d_width() {
         "the fixture needs a choice of precommit openings"
     );
 
-    let product_key = ScheduleLookupKey {
-        final_group: grouped_key.final_group,
-        precommitteds: vec![frozen_group, frozen_group],
-    };
+    let product_key = ScheduleLookupKey::decoded(grouped_key.final_group, vec![frozen_group, frozen_group]);
     let opening_products = crate::schedule_params::suffix_dp::packing_precommit_opening_products(
         &policy,
         dimensions,
@@ -772,10 +766,7 @@ fn root_packing_candidates_use_adversarial_linf_and_exact_d_width() {
         }
     }
 
-    let repeated_key = ScheduleLookupKey {
-        final_group: grouped_key.final_group,
-        precommitteds: vec![frozen_group; 256],
-    };
+    let repeated_key = ScheduleLookupKey::decoded(grouped_key.final_group, vec![frozen_group; 256]);
     let repeated_products = crate::schedule_params::suffix_dp::packing_precommit_opening_products(
         &policy,
         dimensions,
@@ -793,10 +784,7 @@ fn root_packing_candidates_use_adversarial_linf_and_exact_d_width() {
     let mixed_products = crate::schedule_params::suffix_dp::packing_precommit_opening_products(
         &policy,
         dimensions,
-        &ScheduleLookupKey {
-            final_group: grouped_key.final_group,
-            precommitteds: vec![frozen_group; 3],
-        },
+        &ScheduleLookupKey::decoded(grouped_key.final_group, vec![frozen_group; 3]),
         &[
             Dense::committed_source_contract().unwrap(),
             one_hot_contract,
@@ -817,7 +805,8 @@ fn root_packing_candidates_use_adversarial_linf_and_exact_d_width() {
                 challenge_subring_dimension: geometry.challenge_subring_dimension(),
             }
         }
-        PlannerOpeningCandidate::EvaluationTrace { .. } => {
+        PlannerOpeningCandidate::EvaluationTrace { .. }
+        | PlannerOpeningCandidate::FullRingScalarExtension { .. } => {
             unreachable!("the packing domain holds packing openings")
         }
     };
@@ -826,10 +815,7 @@ fn root_packing_candidates_use_adversarial_linf_and_exact_d_width() {
         .map(|(params, _)| synthetic_profile(key.final_group, params))
         .find(|profile| *profile != frozen_group)
         .expect("a second root profile");
-    let split_key = ScheduleLookupKey {
-        final_group: grouped_key.final_group,
-        precommitteds: vec![frozen_group, other_class, frozen_group],
-    };
+    let split_key = ScheduleLookupKey::decoded(grouped_key.final_group, vec![frozen_group, other_class, frozen_group]);
     let split_products = crate::schedule_params::suffix_dp::packing_precommit_opening_products(
         &policy,
         dimensions,
@@ -871,15 +857,12 @@ fn root_packing_candidates_use_adversarial_linf_and_exact_d_width() {
     // Distinct group layouts form distinct classes that share one domain.
     // These profiles only feed enumeration, which reads ring dimensions; they
     // are not valid commit-phase profiles and must not be materialized.
-    let distinct_classes = |count: usize| ScheduleLookupKey {
-        final_group: grouped_key.final_group,
-        precommitteds: (0..count)
-            .map(|index| GroupCommitPhaseParams {
-                group: PolynomialGroupLayout::singleton(10 + index),
-                ..frozen_group
-            })
-            .collect(),
-    };
+    let distinct_classes = |count: usize| ScheduleLookupKey::decoded(grouped_key.final_group, (0..count)
+        .map(|index| GroupCommitPhaseParams {
+            group: PolynomialGroupLayout::singleton(10 + index),
+            ..frozen_group
+        })
+        .collect());
     let mut fitting_classes = 1;
     while precommit_domain.len().pow(fitting_classes + 1)
         <= crate::schedule_params::MAX_PRECOMMIT_OPENING_PRODUCTS
@@ -955,10 +938,7 @@ fn guided_root_slice_survives_grouped_local_pruning() {
         scalar_key.final_group,
         &scalar.first().expect("scalar root candidate").0,
     );
-    let grouped_key = ScheduleLookupKey {
-        final_group: scalar_key.final_group,
-        precommitteds: vec![frozen],
-    };
+    let grouped_key = ScheduleLookupKey::decoded(scalar_key.final_group, vec![frozen]);
     let precommit_opening =
         PlannerOpeningCandidate::coefficient_packing(0, policy.claim_ext_degree, dimensions, 128)
             .expect("valid precommit packing opening")

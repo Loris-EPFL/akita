@@ -2,7 +2,7 @@
 //!
 //! Fisher-Yates partial shuffle helpers shared by the signed-sparse sampler.
 
-use crate::sampler::xof::XofCursor;
+use crate::sampler::RangeSignSource;
 use akita_error::AkitaError;
 
 /// Max ring dimension supported by the stack-buffer sampling paths.
@@ -121,13 +121,14 @@ impl DistinctPositionScratch {
 /// `0..universe` into `out`.
 #[inline]
 pub(crate) fn sample_distinct_positions_into(
-    cursor: &mut XofCursor,
+    cursor: &mut impl RangeSignSource,
     universe: usize,
     out: &mut [u32],
     scratch: &mut DistinctPositionScratch,
 ) -> Result<(), AkitaError> {
-    debug_assert!(out.len() <= universe);
-    debug_assert!(universe <= MAX_STACK_RING_DIM);
+    if out.len() > universe || universe > MAX_STACK_RING_DIM {
+        return Err(AkitaError::InvalidInput("invalid shell permutation dimensions".into()));
+    }
     // A dense challenge already has output size Theta(universe), and the flat
     // permutation has the best concrete locality. Sparse production families
     // instead retain only the O(weight) swaps touched by partial Fisher-Yates.
@@ -158,7 +159,7 @@ pub(crate) fn sample_distinct_positions_into(
 
 #[inline]
 fn sample_distinct_positions_into_sparse(
-    cursor: &mut XofCursor,
+    cursor: &mut impl RangeSignSource,
     universe: usize,
     out: &mut [u32],
     scratch: &mut DistinctPositionScratch,
@@ -166,7 +167,9 @@ fn sample_distinct_positions_into_sparse(
     scratch.prepare(out.len())?;
     scratch.clear();
     for (i, dst) in out.iter_mut().enumerate() {
-        let j = i + cursor.next_usize_mod(universe - i);
+        let digit = cursor.sample_range(universe - i)?;
+        if digit >= universe - i { return Err(AkitaError::InvalidProof); }
+        let j = i + digit;
         let left = scratch.get(i)?;
         let right = scratch.get(j)?;
         scratch.insert(i, right)?;
@@ -178,7 +181,7 @@ fn sample_distinct_positions_into_sparse(
 
 #[inline]
 fn sample_distinct_positions_into_stack<T, const N: usize>(
-    cursor: &mut XofCursor,
+    cursor: &mut impl RangeSignSource,
     universe: usize,
     out: &mut [u32],
 ) -> Result<(), AkitaError>
@@ -196,7 +199,9 @@ where
         *slot = T::try_from(i).map_err(|_| AkitaError::InvalidProof)?;
     }
     for (i, dst) in out.iter_mut().enumerate() {
-        let j = i + cursor.next_usize_mod(universe - i);
+        let digit = cursor.sample_range(universe - i)?;
+        if digit >= universe - i { return Err(AkitaError::InvalidProof); }
+        let j = i + digit;
         perm.swap(i, j);
         *dst = u32::from(perm[i]);
     }
@@ -207,13 +212,22 @@ where
 mod tests {
     use super::*;
 
+    struct DeterministicSource(u64);
+    impl RangeSignSource for DeterministicSource {
+        fn sample_range(&mut self, modulus: usize) -> Result<usize, AkitaError> {
+            self.0 = self.0.wrapping_mul(6364136223846793005).wrapping_add(1);
+            Ok((self.0 % modulus as u64) as usize)
+        }
+        fn fill_bytes(&mut self, _: &mut [u8]) -> Result<(), AkitaError> {
+            Err(AkitaError::InvalidProof)
+        }
+    }
+
     #[test]
     fn sparse_virtual_permutation_matches_dense_partial_fisher_yates() {
         for (universe, weight) in [(128usize, 7usize), (256, 23), (1024, 16), (2048, 14)] {
-            let seed = [universe.trailing_zeros() as u8; 32];
-            let prefix = crate::sampler::IndexedXofPrefix::new(&seed).unwrap();
-            let mut dense_cursor = XofCursor::from_indexed_prefix(&prefix, 0);
-            let mut sparse_cursor = XofCursor::from_indexed_prefix(&prefix, 0);
+            let mut dense_cursor = DeterministicSource(universe as u64);
+            let mut sparse_cursor = DeterministicSource(universe as u64);
             let mut dense = vec![0u32; weight];
             let mut sparse = vec![0u32; weight];
             let mut scratch = DistinctPositionScratch::new();

@@ -54,6 +54,7 @@ where
                     || plan.positions_per_block() != parameters.num_positions_per_block()
                     || plan.live_blocks() != parameters.num_live_blocks()
                     || plan.opening_method() != parameters.opening_method()
+                    || plan.source_view() != parameters.source_view()
                 {
                     return Err(AkitaError::InvalidInput(
                         "opening does not match the admitted group".into(),
@@ -74,24 +75,39 @@ where
                                 "commitment profile differs from the admitted group profile".into(),
                             ));
                         }
-                        if handle.committed.metadata.num_vars() < plan.point().len()
+                        let vars = handle.committed.metadata.num_vars();
+                        let point_matches = match plan.source_view() {
+                            SourceOpeningView::Decoded => vars >= plan.point().len(),
+                            SourceOpeningView::OriginalRamPlanesV1 => {
+                                vars == 16 && plan.point().len() == 21 && E::DEGREE == 1
+                                    && plan.basis() == BasisMode::Lagrange
+                                    && context.fold_level() == 0
+                            }
+                        };
+                        if !point_matches
                             || handle.committed.parameters.inner.matrix.ring_dimension()
                                 != plan.ring_dimension()
                         {
                             return Err(AkitaError::InvalidInput(
-                                "commitment and opening geometry disagree".into(),
+                                "commitment and opening source/view geometry disagree".into(),
                             ));
                         }
-                        handle.committed.source.opening(
-                            self,
-                            &binding,
-                            plan,
-                            PreparedOpeningSource::Retained(RetainedOpeningSource::Commitment(
-                                handle.committed.clone(),
-                            )),
-                        )?
+                        handle
+                            .committed
+                            .source
+                            .ordinary_opening(
+                                self,
+                                &binding,
+                                plan,
+                                PreparedOpeningSource::Retained(RetainedOpeningSource::Commitment(
+                                    handle.committed.clone(),
+                                )),
+                            )?
                     }
                     OpeningSource::Witness(witness) => {
+                        if plan.source_view() != SourceOpeningView::Decoded {
+                            return Err(AkitaError::InvalidInput("recursive witnesses require decoded opening views".into()));
+                        }
                         self.validate_binding(&witness.operation_binding())?;
                         binding.validate_lineage(&witness.operation_binding())?;
                         let (schedule, _) = binding.scope_lease().proof_plan()?;
@@ -163,6 +179,28 @@ where
         opening: &Self::PreparedOpeningHandle,
         plan: &ValidatedFoldProbePlan<'_>,
     ) -> Result<FoldProbeOutcome<Self::AcceptedFoldHandle>, AkitaError> {
+        self.probe_retained_opening_fold(context, opening, plan)
+    }
+}
+
+impl<F, E> CpuBackend<F, E>
+where
+    F: Field
+        + CanonicalEncoding
+        + AkitaSerialize
+        + jolt_field::PseudoMersenne
+        + Ring
+        + Unreduced
+        + 'static,
+    F::Wide: From<F> + jolt_field::AdditiveGroup,
+    E: ExtField<F> + 'static,
+{
+    pub(crate) fn probe_retained_opening_fold(
+        &self,
+        context: &ProofContext,
+        opening: &CpuPreparedOpeningHandle<F, E>,
+        plan: &ValidatedFoldProbePlan<'_>,
+    ) -> Result<FoldProbeOutcome<CpuAcceptedFoldHandle<F>>, AkitaError> {
         let binding = opening.operation_binding();
         self.validate_binding(&binding)?;
         binding.scope_lease().validate_context(context)?;
@@ -214,7 +252,24 @@ where
                 F,
                 plan.ring_dimension(),
                 |D| {
-                    crate::opaque::consumer_kernels::RecursiveWitnessFoldKernel::<_,F,D>::probe_recursive_witness(self, Some(self.prepared()?), witness, plan)
+                    let prepared = if plan.opening_method().is_full_ring_scalar_extension() {
+                        witness.validate_full_ring_extent()?;
+                        let source = witness.full_ring_source_id.ok_or_else(|| {
+                            AkitaError::InvalidInput(
+                                "terminal A-only source cannot enter a recursive fold".into(),
+                            )
+                        })?;
+                        self.full_ring_prepared(
+                            self.full_ring_setup()?
+                                .descriptor()
+                                .source(source)?
+                                .commitment_roles
+                                .inner,
+                        )?
+                    } else {
+                        self.prepared()?
+                    };
+                    crate::opaque::consumer_kernels::RecursiveWitnessFoldKernel::<_,F,D>::probe_recursive_witness(self, Some(prepared), witness, plan)
                 }
             )?,
         };

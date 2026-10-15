@@ -24,6 +24,8 @@ pub use commitment::{
     GroupContext, PortableCompressionOutput, PortableCompressionState, SetupPrefixProverRegistry,
     SetupPrefixSlot,
 };
+pub use opaque::full_ring::CpuFullRingSourceReader;
+pub use opaque::{CpuDecodedDenseComponentReader, CpuOriginalMainComponentReader, CpuOriginalRamPlaneReader};
 pub use opaque::standalone;
 pub use opaque::{
     evaluate_root_polynomial, CpuBackend, PreparedCrtNttProfile, PreparedNttCacheMetric,
@@ -31,7 +33,8 @@ pub use opaque::{
 };
 pub use opaque::{CommitOutput, CommitmentHandle, CpuSource, SourceHandle};
 pub use setup::AkitaProverSetup;
-pub use sources::{DensePoly, OneHotIndex, OneHotPoly, OneHotSource};
+pub use setup::{compact_inner_setup_descriptor, install_compact_inner_setup};
+pub use sources::{DensePoly, OneHotIndex, OneHotPoly, OneHotSource, PackedRamSource};
 
 /// Extension contracts for application-owned CPU polynomial sources.
 ///
@@ -56,6 +59,7 @@ pub mod custom_source {
         SubringCoefficientPackingBatchKernel, SubringCoefficientPackingPartials,
         SubringCoefficientPackingPlan,
     };
+    pub use crate::sources::full_ring::FullRingSource;
     pub use crate::sources::onehot::OneHotBatchView;
     pub use crate::sources::poly::{
         RootOpeningSource, RootPolyMeta, RootPolyShape, SourceCoefficients,

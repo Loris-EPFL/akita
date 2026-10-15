@@ -158,6 +158,55 @@ impl TerminalResponseShape {
     /// budget. It is also the verifier cap for a Linf route. An L2 route emits
     /// no Linf cap and enforces only its complete response energy.
     pub fn derive(params: &TerminalFoldParams, encoding_scale: u128) -> Result<Self, AkitaError> {
+        if let crate::TerminalResponseCodec::SignedFixedWidth {
+            bytes_per_coefficient,
+            coefficient_bound,
+        } = params.response_codec
+        {
+            if params.opening_method != crate::OpeningMethod::FULL_RING_E2
+                || params.response_codec
+                    != crate::TerminalResponseCodec::full_ring(params.blocks.live_blocks)?
+                || encoding_scale != coefficient_bound
+            {
+                return Err(AkitaError::InvalidSetup(
+                    "full-ring terminal shape codec mismatch".into(),
+                ));
+            }
+            let z_coords = params.inner_width().checked_mul(128).ok_or_else(|| {
+                AkitaError::InvalidSetup("terminal response size overflow".into())
+            })?;
+            let e_field_elems =
+                params.blocks.live_blocks.checked_mul(256).ok_or_else(|| {
+                    AkitaError::InvalidSetup("terminal partial size overflow".into())
+                })?;
+            let t_field_elems = params
+                .blocks
+                .live_blocks
+                .checked_mul(params.inner.matrix.output_rank())
+                .and_then(|n| n.checked_mul(128))
+                .ok_or_else(|| AkitaError::InvalidSetup("terminal A image size overflow".into()))?;
+            let z_payload_bytes = z_coords.checked_mul(bytes_per_coefficient).ok_or_else(|| {
+                AkitaError::InvalidSetup("terminal integer payload overflow".into())
+            })?;
+            let logical_num_elems = z_coords
+                .checked_add(e_field_elems)
+                .and_then(|n| n.checked_add(t_field_elems))
+                .ok_or_else(|| AkitaError::InvalidSetup("terminal shape overflow".into()))?;
+            return Ok(Self {
+                layout: TailSegmentLayout {
+                    ring_dimension: 128,
+                    groups: vec![TailSegmentGroupLayout {
+                        z_coords,
+                        e_field_elems,
+                        t_field_elems,
+                        z_linf_cap: Some(coefficient_bound),
+                        z_rice_low_bits: 0,
+                        z_payload_bytes,
+                    }],
+                    logical_num_elems,
+                },
+            });
+        }
         if encoding_scale == 0 {
             return Err(AkitaError::InvalidSetup(
                 "terminal response encoding scale must be nonzero".to_string(),

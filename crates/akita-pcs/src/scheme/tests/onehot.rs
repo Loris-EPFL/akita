@@ -145,10 +145,7 @@ fn group_batch_schedule_preserves_precommitted_order() {
     let pre_a_frozen = catalog_profile(&scheme, pre_a_key);
     let pre_b_frozen = catalog_profile(&scheme, pre_b_key);
     let pre_c_frozen = catalog_profile(&scheme, pre_c_key);
-    let multi_group_key = akita_params::ScheduleLookupKey {
-        final_group: akita_params::PolynomialGroupLayout::new(FINAL_NV, MAIN_SIZE),
-        precommitteds: vec![pre_a_frozen, pre_b_frozen, pre_c_frozen],
-    };
+    let multi_group_key = akita_params::ScheduleLookupKey::decoded(akita_params::PolynomialGroupLayout::new(FINAL_NV, MAIN_SIZE), vec![pre_a_frozen, pre_b_frozen, pre_c_frozen]);
 
     let schedule = scheme
         .schedules()
@@ -230,10 +227,7 @@ fn group_batch_commits_independent_arity_precommitted_groups() {
             akita_cpu_backend::GroupContext::scheduler_without_precommitted_groups(),
         )
         .expect("precommit B");
-    let multi_group_key = akita_params::ScheduleLookupKey {
-        final_group: akita_params::PolynomialGroupLayout::new(FINAL_NV, FINAL_SIZE),
-        precommitteds: vec![pre_a_frozen, pre_b_frozen],
-    };
+    let multi_group_key = akita_params::ScheduleLookupKey::decoded(akita_params::PolynomialGroupLayout::new(FINAL_NV, FINAL_SIZE), vec![pre_a_frozen, pre_b_frozen]);
     assert!(multi_group_key
         .fits_setup_capacity(FINAL_NV, SETUP_CAPACITY_SIZE)
         .expect("setup capacity"));
@@ -422,40 +416,28 @@ fn batched_onehot_roundtrip_matches_public_shape_context() {
     let prover_group =
         PolynomialGroupClaims::new(point.clone(), openings.clone(), commitments[0].clone())
             .expect("valid one-hot prover group");
-    let proof = scheme
-        .batched_prove(
-            &setup,
-            selected_prover_data::<OneHotCfg, _>(
-                &scheme,
-                OpeningClaims::from_groups(vec![prover_group])
-                    .expect("valid one-hot prover claims"),
-                vec![hint],
-            )
-            .expect("valid one-hot prover opening data"),
-            &stack,
-            b"test/batched-onehot-shape",
-            BasisMode::Lagrange,
-        )
+    let proof = { let native_setup = &setup; let native_opening = selected_prover_data::<OneHotCfg, _>(
+        &scheme,
+        OpeningClaims::from_groups(vec![prover_group])
+            .expect("valid one-hot prover claims"),
+        vec![hint],
+    )
+    .expect("valid one-hot prover opening data"); let native_session = b"test/batched-onehot-shape"; let native_basis = BasisMode::Lagrange; crate::prepare_native_prover_context(native_setup.expanded.descriptor(), scheme.schedules(), &native_opening, native_session, &[], native_basis, 0).and_then(|native_context| scheme.batched_prove(native_setup, native_opening, &stack, native_session, native_context.registry(), native_context.augmentation(), native_basis)) }
         .expect("batched onehot prove");
     scheme
         .verifier(verifier_setup.clone())
         .and_then(|verifier| {
-            verifier.batched_verify(
-                &proof,
-                b"test/batched-onehot-shape",
-                selected_statement::<OneHotCfg>(
-                    &scheme,
-                    OpeningClaims::from_groups(vec![PolynomialGroupClaims::new(
-                        point,
-                        openings,
-                        &commitments[0],
-                    )
-                    .expect("valid one-hot verifier group")])
-                    .expect("valid one-hot verifier claims"),
+            { let native_statement = selected_statement::<OneHotCfg>(
+                &scheme,
+                OpeningClaims::from_groups(vec![PolynomialGroupClaims::new(
+                    point,
+                    openings,
+                    &commitments[0],
                 )
-                .expect("valid one-hot verifier statement"),
-                BasisMode::Lagrange,
+                .expect("valid one-hot verifier group")])
+                .expect("valid one-hot verifier claims"),
             )
+            .expect("valid one-hot verifier statement"); let native_session = b"test/batched-onehot-shape"; let native_basis = BasisMode::Lagrange; crate::prepare_native_proof_context(verifier.setup().expanded().descriptor(), verifier.schedules(), &native_statement, native_session, &[], native_basis, 0).and_then(|native_context| verifier.batched_verify(&proof, native_session, native_context.registry(), native_context.augmentation(), native_statement, native_basis)) }
         })
         .expect("batched onehot verify");
 }

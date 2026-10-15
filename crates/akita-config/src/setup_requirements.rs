@@ -136,7 +136,7 @@ impl<F> SetupRequirements<F> {
                 prefix_slot_ids.extend(
                     crate::setup_prefix_slots::required_setup_prefix_slot_ids_for_schedule(
                         row.schedule(),
-                        &row.profiles().opening_layout()?,
+                        &row.opening_layout()?,
                     )?,
                 );
             }

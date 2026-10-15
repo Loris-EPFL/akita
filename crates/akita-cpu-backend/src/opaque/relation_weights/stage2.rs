@@ -207,10 +207,13 @@ where
         .iter()
         .enumerate()
         .filter_map(|(index, group)| match group.kind() {
-            OpeningFamily::SubringCoefficientPacking(point) => Some((index, point)),
+            OpeningFamily::SubringCoefficientPacking(point) => Some(Ok((index, point))),
             OpeningFamily::EvaluationTrace(_) => None,
+            OpeningFamily::FullRingScalarExtension(_) => Some(Err(AkitaError::InvalidInput(
+                "full-ring openings require the exact coefficient relation".into(),
+            ))),
         })
-        .collect::<Vec<_>>();
+        .collect::<Result<Vec<_>, _>>()?;
     let opening_points = if points.is_empty() {
         OpeningFamily::EvaluationTrace(())
     } else if points.len() == request.groups.len() {
@@ -254,6 +257,11 @@ where
                 request.opening_ring_dimension,
                 request.relation_plan,
             )?
+        }
+        akita_params::RingRelationMode::ExactCoefficientRows => {
+            return Err(AkitaError::InvalidInput(
+                "exact coefficient rows require the full-ring fused endpoint".into(),
+            ))
         }
     };
     let linear = if parameters.payload_mode.is_compressed()

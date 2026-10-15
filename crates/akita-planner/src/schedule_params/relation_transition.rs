@@ -16,6 +16,7 @@ pub(crate) enum RelationSearchDomain {
     QuotientOnly,
     ReducedOnly,
     QuotientAndReduced,
+    ExactCoefficientRows,
 }
 
 /// Candidate traversal only; it must not affect the exact selected schedule.
@@ -63,9 +64,11 @@ impl RelationSearchDomain {
                 Ok(Self::QuotientOnly)
             }
             #[cfg(feature = "test-support")]
-            (Self::ReducedOnly, RelationModeFilter::QuotientOnly) => Err(AkitaError::InvalidSetup(
-                "quotient-only search reached a reduced-only suffix".into(),
-            )),
+            (Self::ReducedOnly | Self::ExactCoefficientRows, RelationModeFilter::QuotientOnly) => {
+                Err(AkitaError::InvalidSetup(
+                    "quotient-only search reached a reduced-only suffix".into(),
+                ))
+            }
         }
     }
     #[must_use]
@@ -73,6 +76,7 @@ impl RelationSearchDomain {
         match self {
             Self::QuotientOnly => &[RingRelationMode::QuotientLift],
             Self::ReducedOnly => &[RingRelationMode::ReducedEvaluation],
+            Self::ExactCoefficientRows => &[RingRelationMode::ExactCoefficientRows],
             Self::QuotientAndReduced => &[
                 RingRelationMode::QuotientLift,
                 RingRelationMode::ReducedEvaluation,
@@ -114,6 +118,7 @@ impl RelationSearchDomain {
         match self {
             Self::ReducedOnly | Self::QuotientAndReduced => Self::QuotientAndReduced,
             Self::QuotientOnly => Self::QuotientOnly,
+            Self::ExactCoefficientRows => Self::ExactCoefficientRows,
         }
     }
 
@@ -130,6 +135,7 @@ impl RelationSearchDomain {
         match mode {
             RingRelationMode::QuotientLift => Self::QuotientOnly,
             RingRelationMode::ReducedEvaluation => Self::ReducedOnly,
+            RingRelationMode::ExactCoefficientRows => Self::ExactCoefficientRows,
         }
     }
 }
@@ -166,6 +172,7 @@ impl RelationSearchDomain {
             [RingRelationMode::QuotientLift, RingRelationMode::ReducedEvaluation] => Self::QuotientAndReduced,
             [RingRelationMode::QuotientLift] => Self::QuotientOnly,
             [RingRelationMode::ReducedEvaluation] => Self::ReducedOnly,
+            [RingRelationMode::ExactCoefficientRows] => Self::ExactCoefficientRows,
             _ => return Err(AkitaError::InvalidSetup("reduced-evaluation suffix requires a direct EvaluationTrace fold at level 2 or later".into())),
         };
         if let Some(diagnostics) = diagnostics {

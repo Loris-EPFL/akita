@@ -7,7 +7,8 @@
 //!   response caps assume;
 //! * the **bound** — how wide a centered coefficient may be
 //!   ([`DecompositionParams::log_commit_bound`]), which decides the A-role digit
-//!   depth and how much range the final digit plane is charged.
+//!   depth. Only canonical sources discount the final digit plane's range;
+//!   original-plane sources charge the complete alphabet in every plane.
 //!
 //! They are deliberately independent: a preset declares them separately, and
 //! neither can be inferred from the other. In particular `log_commit_bound == 1`
@@ -50,6 +51,11 @@ pub enum CommittedSourceClass {
     /// Admissibility is a magnitude question only, so it is decided by
     /// [`CommittedSourceContract::accepted_bounds`].
     BalancedSignedDigit,
+    /// Original, possibly noncanonical balanced digit planes. Every plane,
+    /// including the last, admits the full alphabet `[-2^(b-1), 2^(b-1)-1]`.
+    /// The declaration must be full-field and its base/depth are immutable;
+    /// decoded field coefficient reach cannot establish this envelope.
+    OriginalBalancedDigitPlanes,
 }
 
 impl CommittedSourceClass {
@@ -63,24 +69,25 @@ impl CommittedSourceClass {
             Self::UnitOneHot { source_chunk_size } => HonestFoldPolicySpec::UnitOneHot(
                 UnitOneHotFoldPolicy::canonical(field_bits, source_chunk_size),
             ),
-            Self::BalancedSignedDigit => HonestFoldPolicySpec::BalancedSignedDigit(
-                BalancedSignedDigitFoldPolicy::universal(field_bits),
-            ),
+            Self::BalancedSignedDigit | Self::OriginalBalancedDigitPlanes => {
+                HonestFoldPolicySpec::BalancedSignedDigit(BalancedSignedDigitFoldPolicy::universal(
+                    field_bits,
+                ))
+            }
         }
     }
 
     /// Chunk size a source representation must report to satisfy this class, or
     /// `None` when the class imposes no structural requirement.
     ///
-    /// Only the unit one-hot class is structurally restrictive. A one-hot source
-    /// committed under a balanced-digit schedule is admissible: its digit energy
-    /// is strictly below what that schedule charges, so the pricing stays
-    /// conservative.
+    /// The original-plane class separately requires its exact plane envelope.
+    /// A one-hot source committed under a canonical balanced-digit schedule is
+    /// admissible: its digit energy is below what that schedule charges.
     #[must_use]
     pub const fn required_onehot_chunk_size(self) -> Option<usize> {
         match self {
             Self::UnitOneHot { source_chunk_size } => Some(source_chunk_size),
-            Self::BalancedSignedDigit => None,
+            Self::BalancedSignedDigit | Self::OriginalBalancedDigitPlanes => None,
         }
     }
 }
@@ -125,6 +132,13 @@ impl CommittedSourceContract {
         decomposition: DecompositionParams,
     ) -> Result<Self, AkitaError> {
         decomposition.validate()?;
+        if class == CommittedSourceClass::OriginalBalancedDigitPlanes
+            && decomposition.has_bounded_committed_source()
+        {
+            return Err(AkitaError::InvalidSetup(
+                "original balanced planes require a full-field producer declaration".into(),
+            ));
+        }
         if let CommittedSourceClass::UnitOneHot { source_chunk_size } = class {
             if source_chunk_size == 0 || !source_chunk_size.is_power_of_two() {
                 return Err(AkitaError::InvalidSetup(format!(
@@ -140,10 +154,10 @@ impl CommittedSourceContract {
 
     /// Derive both fold-plane norms and aggregate energy from one source contract.
     ///
-    /// Balanced planes use the remaining declared bits, with a unit carry
-    /// allowance past the bound. Fold sizing maximizes over planes; energy sums
-    /// their squares. The selected basis must fit the admitted i8/i16 inner
-    /// kernels. No planner bucketing or probability scaling occurs here.
+    /// Canonical balanced planes use the remaining declared bits, with a unit
+    /// carry allowance past the bound. Original planes charge the full alphabet
+    /// in every plane. Fold sizing maximizes over planes; energy sums their
+    /// squares. No planner bucketing or probability scaling occurs here.
     ///
     /// # Errors
     /// Returns an error for unsupported inner digit geometry, invalid one-hot
@@ -167,6 +181,30 @@ impl CommittedSourceContract {
             ));
         }
         match self.class {
+            CommittedSourceClass::OriginalBalancedDigitPlanes => {
+                if self.original_plane_geometry() != Some((log_basis, digit_count)) {
+                    return Err(AkitaError::InvalidSetup(
+                        "original balanced plane geometry differs from its producer contract"
+                            .into(),
+                    ));
+                }
+                let maximum = 1u128 << (log_basis - 1);
+                let coefficient_sq_max = maximum * maximum;
+                let l2_sq = coefficient_sq_max
+                    .checked_mul(digit_count as u128)
+                    .and_then(|energy| energy.checked_mul(logical_len as u128))
+                    .ok_or_else(|| AkitaError::InvalidSetup("source energy overflow".into()))?;
+                Ok(SourceNorms {
+                    fold_witness: FoldWitnessNorms::new(
+                        maximum,
+                        maximum.checked_mul(ring_dimension as u128).ok_or_else(|| {
+                            AkitaError::InvalidSetup("source ring norm overflow".into())
+                        })?,
+                    ),
+                    l2_sq,
+                    coefficient_sq_max,
+                })
+            }
             CommittedSourceClass::BalancedSignedDigit => {
                 let mut energy = 0u128;
                 let mut maximum = 0u128;
@@ -263,6 +301,21 @@ impl CommittedSourceContract {
     #[must_use]
     pub const fn decomposition(self) -> DecompositionParams {
         self.decomposition
+    }
+
+    /// Immutable `(log_basis, plane_count)` of an original-plane envelope.
+    /// `None` denotes a canonical coefficient source, not an original witness.
+    #[must_use]
+    pub fn original_plane_geometry(self) -> Option<(u32, usize)> {
+        (self.class == CommittedSourceClass::OriginalBalancedDigitPlanes).then(|| {
+            (
+                self.decomposition.log_basis,
+                super::decomposition_digits::num_digits_inner_for_bound(
+                    self.decomposition,
+                    self.decomposition.log_commit_bound,
+                ),
+            )
+        })
     }
 
     /// Centered interval the **declared bound alone** admits, as
@@ -554,6 +607,45 @@ mod tests {
                 "must reject one-hot chunk size {chunk}"
             );
         }
+    }
+
+    #[test]
+    fn original_planes_charge_the_full_last_plane_without_changing_canonical_norms() {
+        let decomposition = DecompositionParams {
+            log_basis: 5,
+            log_commit_bound: 128,
+            log_open_bound: Some(128),
+        };
+        let original = CommittedSourceContract::try_new(
+            CommittedSourceClass::OriginalBalancedDigitPlanes,
+            decomposition,
+        )
+        .unwrap();
+        let canonical = CommittedSourceContract::try_new(
+            CommittedSourceClass::BalancedSignedDigit,
+            decomposition,
+        )
+        .unwrap();
+        let length = 1 << 16;
+        let norms = original.source_norms(5, 26, 128, length).unwrap();
+        assert_eq!(norms.l2_sq, 26 * 256 * length as u128);
+        assert_eq!(norms.coefficient_sq_max, 256);
+        assert_eq!(norms.fold_witness.infinity_norm(), 16);
+        assert_eq!(norms.fold_witness.l1_norm(), 2048);
+        assert_eq!(
+            canonical.source_norms(5, 26, 128, length).unwrap().l2_sq,
+            (25 * 256 + 16) * length as u128
+        );
+        assert!(original.source_norms(5, 25, 128, length).is_err());
+        assert!(original.source_norms(4, 32, 128, length).is_err());
+        assert!(CommittedSourceContract::try_new(
+            CommittedSourceClass::OriginalBalancedDigitPlanes,
+            DecompositionParams {
+                log_commit_bound: 127,
+                ..decomposition
+            },
+        )
+        .is_err());
     }
 
     /// The gap the intersection closes, in the numbers that motivated it.

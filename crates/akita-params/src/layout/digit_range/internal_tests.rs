@@ -72,3 +72,17 @@ fn compact_route_shape_matches_materialized_shapes_and_rejects_bad_norms() {
         assert!(plan.proof_shapes_for_route(7, bad).is_err());
     }
 }
+
+#[test]
+fn full_ring_range_wire_is_two_full_coefficient_stages() {
+    assert_eq!(FullRingRangePlan::PRODUCT_ARITIES, [4, 4]);
+    assert_eq!(FullRingRangePlan::NODE_COUNTS, [1, 4, 16]);
+    assert_eq!(FullRingRangePlan::ROUND_DEGREES, [5, 5]);
+    assert_eq!(FullRingRangePlan::FUSED_DEGREE, 3);
+    assert_eq!(FullRingRangePlan::ENDPOINT_VALUES, 6);
+    assert_eq!(
+        FullRingRangePlan::full_coefficient_count(7).unwrap(),
+        (6 + 6 + 4) * 7
+    );
+    assert!(FullRingRangePlan::full_coefficient_count(usize::MAX).is_err());
+}

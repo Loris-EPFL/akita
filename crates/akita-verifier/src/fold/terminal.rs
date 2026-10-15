@@ -23,6 +23,12 @@ where
     F: Field + CanonicalEncoding + akita_serialization::AkitaSerialize + PseudoMersenne,
     E: FpExtEncoding<F> + ExtField<F> + Ring + AkitaSerialize + MulBaseUnreduced<F>,
 {
+    scheduled.validate_opening_execution(E::DEGREE)?;
+    // The full-ring family has its own native compiler and exact terminal
+    // facade. It must never be replayed with this legacy trace/EOR transcript.
+    if scheduled.opening_method.is_full_ring_scalar_extension() {
+        return Err(AkitaError::InvalidProof);
+    }
     if current_state.witness_len != scheduled.input_witness_len
         || current_state.setup_prefix_opening.is_some()
     {
@@ -122,18 +128,22 @@ where
     } else {
         None
     };
-    let challenges = {
-        let mut draw = akita_challenges::VerifierFoldDraw::new(grinding.state_mut(), level, 0);
-        draw.draw_folding_challenges_with_rejection(
+    let descriptor = akita_challenges::ShellLevelDescriptor::new(vec![
+        akita_challenges::ShellGroupDescriptor::new(
             akita_challenges::FoldChallengeDrawDomain::EvaluationTrace,
             scheduled.d_a(),
             0,
             scheduled.blocks.live_blocks,
             1,
-            &scheduled.fold_challenge_config,
+            scheduled.fold_challenge_config,
             operator_rejection,
-        )?
+        )?,
+    ])?;
+    let shell = {
+        let mut draw = akita_challenges::VerifierFoldDraw::new(grinding.state_mut(), level);
+        draw.draw_shell_level(&descriptor)?
     };
+    let challenges = shell.group(0)?.challenges();
     grinding.record_fold_challenges(level, 0, scheduled.blocks.live_blocks)?;
     let z_payload = akita_transcript::receive_bounded_bytes(
         grinding.state_mut(),
@@ -149,7 +159,7 @@ where
     };
     crate::terminal::direct::verify_terminal_ring_relations(
         terminal_ntt,
-        &challenges,
+        challenges,
         &prepared_point.ring_multiplier_point,
         scheduled,
         &terminal_response,

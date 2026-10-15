@@ -88,8 +88,9 @@ fn validate_materialized_representation<F: Field>(
             }
         }
         PolynomialRepresentation::Dense(DenseRepresentation::PredecomposedDigits(planes)) => {
-            let logical_len = checked_logical_len(descriptor.num_vars())?;
-            let expected_rings = logical_len.div_ceil(plan.ring_dimension);
+            let expected_rings = descriptor
+                .commitment_coefficient_len
+                .div_ceil(plan.ring_dimension);
             let expected_bytes =
                 checked::product([expected_rings, plan.num_digits_inner, plan.ring_dimension])
                     .ok_or_else(|| {
@@ -271,7 +272,7 @@ pub(super) fn validate_plan_extents(
     }
     let _logical_len = checked_logical_len(descriptor.num_vars)?;
     let ring_count = descriptor
-        .live_coefficient_len
+        .commitment_coefficient_len
         .div_ceil(plan.ring_dimension);
     let physical_len = ring_count
         .checked_mul(plan.ring_dimension)

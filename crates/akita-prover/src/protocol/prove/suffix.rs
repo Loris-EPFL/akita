@@ -18,100 +18,7 @@ pub struct SuffixProverState<F: Field, E: Field, MaterialHandle, WitnessHandle> 
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(super) fn prove_suffix<Cfg, B>(
-    expanded: &akita_types::AkitaSetupDescriptor,
-    prefix_slots: &SetupPrefixProverRegistry<Cfg::Field, B::CommitmentHandle>,
-    backend: &B,
-    grinding: &mut akita_types::ProverGrinding<'_>,
-    mut current_state: SuffixProverState<
-        Cfg::Field,
-        Cfg::ExtField,
-        B::CommitmentMaterialHandle,
-        B::WitnessHandle,
-    >,
-    schedule: &FoldSchedule,
-    session: &B::ProofSessionHandle,
-) -> Result<RecursiveSuffixOutcome, AkitaError>
-where
-    Cfg: CommitmentConfig,
-    Cfg::Field: CanonicalEncoding + AkitaSerialize + Ring + Unreduced + PseudoMersenne + 'static,
-    <Cfg::Field as Unreduced>::Wide: From<Cfg::Field> + AdditiveGroup,
-    Cfg::ExtField: FpExtEncoding<Cfg::Field>
-        + ExtField<Cfg::Field>
-        + Unreduced
-        + Fold
-        + Ring
-        + MulBaseUnreduced<Cfg::Field>
-        + AkitaSerialize
-        + 'static,
-    B: ProverBackend<Cfg::Field, Cfg::ExtField>,
-{
-    for (index, step) in schedule.recursive_folds.iter().enumerate() {
-        let level = index + 1;
-        if current_state.witness_handle.manifest().logical_len() != step.input_witness_len {
-            return Err(AkitaError::Internal(
-                "recursive suffix witness length differs from scheduled input".into(),
-            ));
-        }
-        let (next_params, next_binding) = schedule.recursive_folds.get(index + 1).map_or(
-            (
-                fold::FoldSuccessorParams::Terminal(&schedule.terminal),
-                akita_params::NextWitnessBindingPolicy::TerminalInnerState,
-            ),
-            |next| {
-                (
-                    fold::FoldSuccessorParams::Recursive(next),
-                    akita_params::NextWitnessBindingPolicy::OuterPayload,
-                )
-            },
-        );
-        let prepared = prepare_suffix::<Cfg::Field, Cfg::ExtField, B>(
-            backend,
-            prefix_slots,
-            grinding,
-            current_state,
-            level,
-            &step.params,
-            session,
-            step.output_witness_len,
-            next_params.inner_ring_dimension(),
-        )?;
-        let output = prove_fold::<Cfg::Field, Cfg::ExtField, B>(
-            expanded,
-            prefix_slots,
-            backend,
-            session,
-            grinding,
-            level,
-            &step.params,
-            next_params,
-            step.output_witness_len,
-            next_binding,
-            prepared,
-        )?;
-        current_state = output.next_state;
-    }
-    if current_state.witness_handle.manifest().logical_len() != schedule.terminal.input_witness_len
-    {
-        return Err(AkitaError::Internal(
-            "terminal suffix witness length differs from scheduled input".into(),
-        ));
-    }
-    prove_terminal_suffix::<Cfg::Field, Cfg::ExtField, B>(
-        backend,
-        grinding,
-        schedule.recursive_folds.len() + 1,
-        current_state,
-        &schedule.terminal,
-        session,
-    )?;
-    Ok(RecursiveSuffixOutcome {
-        num_levels: schedule.num_fold_levels(),
-    })
-}
-
-#[allow(clippy::too_many_arguments)]
-fn prove_terminal_suffix<F, E, B>(
+pub(super) fn prove_terminal_suffix<F, E, B>(
     backend: &B,
     grinding: &mut akita_types::ProverGrinding<'_>,
     level: usize,
@@ -239,6 +146,7 @@ where
                     alpha_bits,
                     akita_params::OpeningMethod::EvaluationTrace,
                     witness_source.manifest().logical_len(),
+                    akita_params::SourceOpeningView::Decoded,
                 );
                 let prepared =
                     crate::backend::OpaqueWitnessOpeningKernel::prepare_native_witness_opening(
@@ -344,7 +252,7 @@ where
     )
 }
 #[allow(clippy::too_many_arguments)]
-fn prepare_suffix<F, E, B>(
+pub(super) fn prepare_suffix<F, E, B>(
     backend: &B,
     prefix_slots: &SetupPrefixProverRegistry<F, B::CommitmentHandle>,
     grinding: &mut akita_types::ProverGrinding<'_>,
@@ -502,10 +410,34 @@ where
 mod tests {
     use super::*;
     use crate::protocol::prove::fold_kernels::prepare_evaluation_trace_claim;
-    use akita_transcript::new_prover_channel;
     use jolt_field::{One, Prime32Offset99, Zero};
 
     type TestF = Prime32Offset99;
+
+    fn evaluation_channel(session: &[u8], count: u32) -> akita_transcript::ProverChannel {
+        use akita_transcript::{
+            IndexedLimits, InstalledContext, InstalledEvent, InstalledRegistry,
+        };
+        let events = (0..count).map(|index| {
+            let mut site = akita_params::GrindingSite::EvaluationBatch { level: 0 }.site_id(0);
+            site.group = index;
+            InstalledEvent::Request(
+                akita_transcript::field_request_spec::<TestF, TestF>(u64::from(index), site).unwrap(),
+            )
+        }).collect();
+        let limits = IndexedLimits {
+            max_context_bytes: 1 << 20,
+            max_prefix_bytes: 1 << 20,
+            max_key_bytes: 1 << 20,
+            max_descriptor_bytes: 1 << 20,
+            max_answer_bytes: 1 << 20,
+            max_result_bytes: 1 << 20,
+            max_proof_bytes: 1 << 20,
+        };
+        let registry = InstalledRegistry::new(0x5355_4646, events, limits).unwrap();
+        let context = InstalledContext::new(&registry, session, b"suffix-batch-test").unwrap();
+        akita_transcript::new_prover_channel(&context).unwrap()
+    }
 
     fn evaluation_batch_plan() -> akita_params::GrindingPlan {
         let challenge_order = akita_params::ChallengeFieldOrder::from_full_capacity(128).unwrap();
@@ -530,7 +462,7 @@ mod tests {
         });
 
         let opening_batch = OpeningClaimsLayout::new(0, 1).expect("singleton opening batch");
-        let channel = new_prover_channel(b"test/suffix-shared-trace-target", b"test").unwrap();
+        let channel = evaluation_channel(b"test/suffix-shared-trace-target", 0);
         let plan = evaluation_batch_plan();
         let mut grinding = akita_types::ProverGrinding::new(channel, &plan);
         let err = match prepare_evaluation_trace_claim::<TestF, TestF>(
@@ -561,8 +493,7 @@ mod tests {
         });
 
         let opening_batch = OpeningClaimsLayout::new(0, 2).expect("two-claim opening batch");
-        let channel =
-            new_prover_channel(b"test/suffix-independent-late-eor-batch", b"test").unwrap();
+        let channel = evaluation_channel(b"test/suffix-independent-late-eor-batch", 2);
         let plan = evaluation_batch_plan();
         let mut grinding = akita_types::ProverGrinding::new(channel, &plan);
         let result = prepare_evaluation_trace_claim::<TestF, TestF>(

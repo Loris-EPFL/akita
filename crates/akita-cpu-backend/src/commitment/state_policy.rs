@@ -30,6 +30,8 @@ enum PortableCompressionMaterial<F: Field> {
         /// Checked packed compression witness.
         witness: CompressionChainWitness,
     },
+    /// Exact native coefficient relations, with every input digit retained.
+    ExactCoefficientRows { witness: CompressionChainWitness },
 }
 
 impl<F: Field> PortableCompressionState<F> {
@@ -56,11 +58,23 @@ impl<F: Field> PortableCompressionState<F> {
         Ok(material)
     }
 
+    pub(crate) fn exact_coefficient_rows(
+        witness: CompressionChainWitness,
+    ) -> Result<Self, AkitaError> {
+        let material = Self {
+            material: Arc::new(PortableCompressionMaterial::ExactCoefficientRows { witness }),
+        };
+        let plan = material.witness().plan().clone();
+        material.validate(&plan, RingRelationMode::ExactCoefficientRows)?;
+        Ok(material)
+    }
+
     /// Borrow the checked compression-chain witness.
     pub fn witness(&self) -> &CompressionChainWitness {
         match self.material.as_ref() {
             PortableCompressionMaterial::QuotientLift { witness, .. }
-            | PortableCompressionMaterial::ReducedEvaluation { witness } => witness,
+            | PortableCompressionMaterial::ReducedEvaluation { witness }
+            | PortableCompressionMaterial::ExactCoefficientRows { witness } => witness,
         }
     }
 
@@ -68,7 +82,8 @@ impl<F: Field> PortableCompressionState<F> {
     pub fn quotients(&self) -> Option<&[RingVec<F>]> {
         match self.material.as_ref() {
             PortableCompressionMaterial::QuotientLift { quotients, .. } => Some(quotients),
-            PortableCompressionMaterial::ReducedEvaluation { .. } => None,
+            PortableCompressionMaterial::ReducedEvaluation { .. }
+            | PortableCompressionMaterial::ExactCoefficientRows { .. } => None,
         }
     }
 
@@ -79,6 +94,9 @@ impl<F: Field> PortableCompressionState<F> {
             PortableCompressionMaterial::QuotientLift { .. } => RingRelationMode::QuotientLift,
             PortableCompressionMaterial::ReducedEvaluation { .. } => {
                 RingRelationMode::ReducedEvaluation
+            }
+            PortableCompressionMaterial::ExactCoefficientRows { .. } => {
+                RingRelationMode::ExactCoefficientRows
             }
         }
     }
@@ -108,6 +126,10 @@ impl<F: Field> PortableCompressionState<F> {
             (
                 PortableCompressionMaterial::ReducedEvaluation { witness },
                 RingRelationMode::ReducedEvaluation,
+            ) => witness.plan() == plan,
+            (
+                PortableCompressionMaterial::ExactCoefficientRows { witness },
+                RingRelationMode::ExactCoefficientRows,
             ) => witness.plan() == plan,
             _ => false,
         };
@@ -316,6 +338,14 @@ pub(super) fn assemble_portable_hint<F: Field>(
                     PortableCommitmentHandle::singleton_with_reduced_outer_compression(
                         row,
                         compression.witness(),
+                    )
+                }
+                RingRelationMode::ExactCoefficientRows if compression.quotients().is_none() => {
+                    PortableCommitmentHandle::new_with_outer_compression(
+                        binding.inner_plan().ring_dimension,
+                        rows,
+                        compression.witness(),
+                        &[],
                     )
                 }
                 _ => Err(AkitaError::InvalidInput(
@@ -824,6 +854,11 @@ where
             RingRelationMode::ReducedEvaluation => PortableCompressionState::reduced_evaluation(
                 self.reduced_outer_compression_witness(plan)?,
             ),
+            RingRelationMode::ExactCoefficientRows => {
+                PortableCompressionState::exact_coefficient_rows(
+                    self.reduced_outer_compression_witness(plan)?,
+                )
+            }
         }
     }
 }

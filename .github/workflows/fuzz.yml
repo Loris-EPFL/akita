@@ -1,3 +1,6 @@
+# Rust jobs build sibling akita/ and jolt/ checkouts. Keep the event revision
+# for this repository so PR gates test the proposed changes; the companion is
+# pinned to the supported akita-query-relation-accumulation-v8 branch.
 name: Fuzz
 
 on:
@@ -32,10 +35,24 @@ jobs:
   fuzz:
     name: Fuzz Akita targets
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: akita
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: akita
+      - name: Checkout paired jolt
+        id: paired-jolt
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: Loris-EPFL/jolt
+          ref: akita-query-relation-accumulation-v8
+          path: jolt
+          persist-credentials: false
       - uses: actions-rust-lang/setup-rust-toolchain@ecabd13d1c56bd1345c230e542e9144811ad706f # v2.0.0
         with:
+          rust-src-dir: akita
           toolchain: nightly
       - name: Install cargo-fuzz
         uses: taiki-e/install-action@3f74d7c16a4242f1c95561e98edc25d36adb4375 # cargo-fuzz

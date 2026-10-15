@@ -31,15 +31,21 @@ impl<'a, E: Clone, H: CommitmentHandleMetadata, F: Field> SelectedProverOpeningD
                 .map(|group| *group.commitment().profile())
                 .collect(),
         )?;
-        let selection = schedules.resolve_profiles(&profile)?.selection();
         let opening_layout = claims.committed_layout()?;
-        for ((layout, handle), claim) in opening_layout
+        let selection = schedules
+            .resolve_profiles(&profile, opening_layout.views())?
+            .selection();
+        for (group_index, ((layout, handle), claim)) in opening_layout
             .groups()
             .iter()
             .zip(&handles)
             .zip(claims.groups())
+            .enumerate()
         {
-            if claim.point().len() != layout.num_vars() {
+            opening_layout
+                .group_view(group_index)?
+                .validate_producer_contract(handle.producer_contract())?;
+            if claim.point().len() != opening_layout.group_point_num_vars(group_index)? {
                 return Err(AkitaError::Internal(
                     "validated claim point length differs from committed layout".into(),
                 ));
@@ -67,14 +73,8 @@ impl<'a, E: Clone, H: CommitmentHandleMetadata, F: Field> SelectedProverOpeningD
         let groups = claims
             .groups()
             .iter()
-            .map(|g| {
-                PolynomialGroupClaims::new(
-                    g.point().to_vec(),
-                    g.evaluations().to_vec(),
-                    g.commitment().commitment().clone(),
-                )
-            })
-            .collect::<Result<Vec<_>, _>>()?;
+            .map(|g| g.clone().map_commitment(|committed| committed.commitment().clone()))
+            .collect::<Vec<_>>();
         Ok(Self {
             selection,
             opening_data: ProverOpeningData::from_parts(
@@ -89,6 +89,10 @@ impl<'a, E: Clone, H: CommitmentHandleMetadata, F: Field> SelectedProverOpeningD
     }
     pub fn opening_layout(&self) -> &OpeningClaimsLayout {
         self.opening_data.opening_layout()
+    }
+    /// Borrow public claims without exposing handles or copying commitments.
+    pub fn opening_claims(&self) -> &OpeningClaims<'a, E, Commitment<F>> {
+        self.opening_data.opening_claims()
     }
     pub(crate) fn into_low_level_parts(
         self,
@@ -115,8 +119,18 @@ impl<'a, PointF: Clone, G, CommitF: Field> ProverOpeningData<'a, PointF, G, Comm
                 "assembled opening claims, handles, and layout have different group counts".into(),
             ));
         }
-        for (claims, layout) in opening_claims.groups().iter().zip(opening_layout.groups()) {
-            if claims.point().len() > layout.num_vars()
+        for (index, (claims, layout)) in opening_claims
+            .groups()
+            .iter()
+            .zip(opening_layout.groups())
+            .enumerate()
+        {
+            let point_len = opening_layout.group_point_num_vars(index)?;
+            let view = opening_layout.group_view(index)?;
+            if claims.source_view() != view
+                || claims.point().len() > point_len
+                || (view == akita_params::SourceOpeningView::OriginalRamPlanesV1
+                    && claims.point().len() != point_len)
                 || claims.evaluations().len() != layout.num_polynomials()
             {
                 return Err(AkitaError::Internal(
@@ -205,5 +219,62 @@ impl<'a, PointF: Clone, G, CommitF: Field> ProverOpeningData<'a, PointF, G, Comm
             )?;
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use akita_params::{PolynomialGroupLayout, SourceOpeningView};
+    use akita_types::RingVec;
+    use jolt_field::Prime128OffsetA7F7;
+
+    type K = Prime128OffsetA7F7;
+
+    #[test]
+    fn raw_query_keeps_source_geometry_and_view_through_mapping() {
+        let layout = OpeningClaimsLayout::from_groups_and_views(
+            vec![PolynomialGroupLayout::singleton(16)],
+            vec![SourceOpeningView::OriginalRamPlanesV1],
+        ).unwrap();
+        let claims = OpeningClaims::from_groups(vec![
+            PolynomialGroupClaims::original_ram_planes_v1(
+                vec![7u64; 21],
+                9,
+                Commitment::<K>::new(RingVec::from_coeffs(Vec::new())),
+            ).unwrap(),
+        ]).unwrap();
+        let opening = ProverOpeningData::from_parts(claims, layout.clone(), vec![()]).unwrap();
+        let mapped = opening.map_groups(|_| 1usize).unwrap();
+        assert_eq!(mapped.opening_layout().group_layout(0).unwrap().num_vars(), 16);
+        assert_eq!(mapped.opening_layout().group_point_num_vars(0).unwrap(), 21);
+        assert_eq!(mapped.opening_claims().groups()[0].source_view(),
+            SourceOpeningView::OriginalRamPlanesV1);
+        assert_eq!(mapped.opening_claims().group_point(0).unwrap(), &[7; 21]);
+
+        let decoded = OpeningClaimsLayout::new(16, 1).unwrap();
+        assert!(ProverOpeningData::from_parts(
+            opening.opening_claims().clone(), decoded, vec![()],
+        ).is_err());
+        let ordinary_claims = OpeningClaims::from_groups(vec![
+            PolynomialGroupClaims::new(
+                vec![7u64; 16], vec![9],
+                Commitment::<K>::new(RingVec::from_coeffs(Vec::new())),
+            ).unwrap(),
+        ]).unwrap();
+        assert!(ProverOpeningData::from_parts(ordinary_claims, layout, vec![()]).is_err());
+    }
+
+    #[test]
+    fn decoded_suffix_retains_short_point_semantics() {
+        let claims = OpeningClaims::from_groups(vec![
+            PolynomialGroupClaims::new(
+                vec![7u64; 5], vec![9],
+                Commitment::<K>::new(RingVec::from_coeffs(Vec::new())),
+            ).unwrap(),
+        ]).unwrap();
+        assert!(ProverOpeningData::from_parts(
+            claims, OpeningClaimsLayout::new(16, 1).unwrap(), vec![()],
+        ).is_ok());
     }
 }

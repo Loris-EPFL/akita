@@ -187,35 +187,23 @@ where
     let hints = vec![hint];
 
     let session = b"setup-tests/dense";
-    let proof = scheme
-        .batched_prove(
-            &setup,
-            prove_input::<Cfg>(
-                &pt[..],
-                &openings,
-                &commitments[0],
-                hints.into_iter().next().unwrap(),
-                scheme.schedules(),
-            ),
-            &stack,
-            session,
-            BasisMode::Lagrange,
-        )
+    let proof = { let native_setup = &setup; let native_opening = prove_input::<Cfg>(
+        &pt[..],
+        &openings,
+        &commitments[0],
+        hints.into_iter().next().unwrap(),
+        scheme.schedules(),
+    ); let native_session = session; let native_basis = BasisMode::Lagrange; akita_pcs::prepare_native_prover_context(native_setup.expanded.descriptor(), scheme.schedules(), &native_opening, native_session, &[], native_basis, 0).and_then(|native_context| scheme.batched_prove(native_setup, native_opening, &stack, native_session, native_context.registry(), native_context.augmentation(), native_basis)) }
         .expect("prove");
     scheme
         .verifier(verifier_setup.clone())
         .and_then(|verifier| {
-            verifier.batched_verify(
-                &proof,
-                session,
-                verify_input::<Cfg>(
-                    &pt[..],
-                    opening_groups[0],
-                    &commitments[0],
-                    scheme.schedules(),
-                ),
-                BasisMode::Lagrange,
-            )
+            { let native_statement = verify_input::<Cfg>(
+                &pt[..],
+                opening_groups[0],
+                &commitments[0],
+                scheme.schedules(),
+            ); let native_session = session; let native_basis = BasisMode::Lagrange; akita_pcs::prepare_native_proof_context(verifier.setup().expanded().descriptor(), verifier.schedules(), &native_statement, native_session, &[], native_basis, 0).and_then(|native_context| verifier.batched_verify(&proof, native_session, native_context.registry(), native_context.augmentation(), native_statement, native_basis)) }
         })
         .expect("verify");
 }
@@ -307,35 +295,23 @@ where
     let hints = vec![hint];
 
     let session = b"setup-tests/onehot";
-    let proof = scheme
-        .batched_prove(
-            &setup,
-            prove_input::<Cfg>(
-                &pt[..],
-                &openings,
-                &commitments[0],
-                hints.into_iter().next().unwrap(),
-                scheme.schedules(),
-            ),
-            &stack,
-            session,
-            BasisMode::Lagrange,
-        )
+    let proof = { let native_setup = &setup; let native_opening = prove_input::<Cfg>(
+        &pt[..],
+        &openings,
+        &commitments[0],
+        hints.into_iter().next().unwrap(),
+        scheme.schedules(),
+    ); let native_session = session; let native_basis = BasisMode::Lagrange; akita_pcs::prepare_native_prover_context(native_setup.expanded.descriptor(), scheme.schedules(), &native_opening, native_session, &[], native_basis, 0).and_then(|native_context| scheme.batched_prove(native_setup, native_opening, &stack, native_session, native_context.registry(), native_context.augmentation(), native_basis)) }
         .expect("prove");
     scheme
         .verifier(verifier_setup.clone())
         .and_then(|verifier| {
-            verifier.batched_verify(
-                &proof,
-                session,
-                verify_input::<Cfg>(
-                    &pt[..],
-                    opening_groups[0],
-                    &commitments[0],
-                    scheme.schedules(),
-                ),
-                BasisMode::Lagrange,
-            )
+            { let native_statement = verify_input::<Cfg>(
+                &pt[..],
+                opening_groups[0],
+                &commitments[0],
+                scheme.schedules(),
+            ); let native_session = session; let native_basis = BasisMode::Lagrange; akita_pcs::prepare_native_proof_context(verifier.setup().expanded().descriptor(), verifier.schedules(), &native_statement, native_session, &[], native_basis, 0).and_then(|native_context| verifier.batched_verify(&proof, native_session, native_context.registry(), native_context.augmentation(), native_statement, native_basis)) }
         })
         .expect("verify");
 
@@ -348,17 +324,12 @@ where
     scheme
         .verifier(verifier_setup.clone())
         .and_then(|verifier| {
-            verifier.batched_verify(
-                &tampered,
-                session,
-                verify_input::<Cfg>(
-                    &pt[..],
-                    opening_groups[0],
-                    &commitments[0],
-                    scheme.schedules(),
-                ),
-                BasisMode::Lagrange,
-            )
+            { let native_statement = verify_input::<Cfg>(
+                &pt[..],
+                opening_groups[0],
+                &commitments[0],
+                scheme.schedules(),
+            ); let native_session = session; let native_basis = BasisMode::Lagrange; akita_pcs::prepare_native_proof_context(verifier.setup().expanded().descriptor(), verifier.schedules(), &native_statement, native_session, &[], native_basis, 0).and_then(|native_context| verifier.batched_verify(&tampered, native_session, native_context.registry(), native_context.augmentation(), native_statement, native_basis)) }
         })
         .expect_err("tampering the terminal response must be rejected");
 
@@ -368,17 +339,12 @@ where
     scheme
         .verifier(verifier_setup.clone())
         .and_then(|verifier| {
-            verifier.batched_verify(
-                &wrong_binding,
-                session,
-                verify_input::<Cfg>(
-                    &pt[..],
-                    opening_groups[0],
-                    &commitments[0],
-                    scheme.schedules(),
-                ),
-                BasisMode::Lagrange,
-            )
+            { let native_statement = verify_input::<Cfg>(
+                &pt[..],
+                opening_groups[0],
+                &commitments[0],
+                scheme.schedules(),
+            ); let native_session = session; let native_basis = BasisMode::Lagrange; akita_pcs::prepare_native_proof_context(verifier.setup().expanded().descriptor(), verifier.schedules(), &native_statement, native_session, &[], native_basis, 0).and_then(|native_context| verifier.batched_verify(&wrong_binding, native_session, native_context.registry(), native_context.augmentation(), native_statement, native_basis)) }
         })
         .expect_err("schedule/proof binding mismatch must reject without panic");
 }
@@ -451,35 +417,23 @@ fn run_dense_batched_e2e<Cfg, const D: usize>(
     let opening_groups = [&openings[..]];
 
     let session = b"setup-tests/batched-dense";
-    let proof = scheme
-        .batched_prove(
-            &setup,
-            prove_input::<Cfg>(
-                &pt[..],
-                &openings,
-                &commitments[0],
-                hints.into_iter().next().unwrap(),
-                scheme.schedules(),
-            ),
-            &stack,
-            session,
-            BasisMode::Lagrange,
-        )
+    let proof = { let native_setup = &setup; let native_opening = prove_input::<Cfg>(
+        &pt[..],
+        &openings,
+        &commitments[0],
+        hints.into_iter().next().unwrap(),
+        scheme.schedules(),
+    ); let native_session = session; let native_basis = BasisMode::Lagrange; akita_pcs::prepare_native_prover_context(native_setup.expanded.descriptor(), scheme.schedules(), &native_opening, native_session, &[], native_basis, 0).and_then(|native_context| scheme.batched_prove(native_setup, native_opening, &stack, native_session, native_context.registry(), native_context.augmentation(), native_basis)) }
         .expect("batched prove");
     scheme
         .verifier(verifier_setup.clone())
         .and_then(|verifier| {
-            verifier.batched_verify(
-                &proof,
-                session,
-                verify_input::<Cfg>(
-                    &pt[..],
-                    opening_groups[0],
-                    &commitments[0],
-                    scheme.schedules(),
-                ),
-                BasisMode::Lagrange,
-            )
+            { let native_statement = verify_input::<Cfg>(
+                &pt[..],
+                opening_groups[0],
+                &commitments[0],
+                scheme.schedules(),
+            ); let native_session = session; let native_basis = BasisMode::Lagrange; akita_pcs::prepare_native_proof_context(verifier.setup().expanded().descriptor(), verifier.schedules(), &native_statement, native_session, &[], native_basis, 0).and_then(|native_context| verifier.batched_verify(&proof, native_session, native_context.registry(), native_context.augmentation(), native_statement, native_basis)) }
         })
         .expect("batched verify");
 }
@@ -556,35 +510,23 @@ fn run_onehot_batched_e2e<Cfg, const D: usize>(
     let opening_groups = [&openings[..]];
 
     let session = b"setup-tests/batched-onehot";
-    let proof = scheme
-        .batched_prove(
-            &setup,
-            prove_input::<Cfg>(
-                &pt[..],
-                &openings,
-                &commitments[0],
-                hints.into_iter().next().unwrap(),
-                scheme.schedules(),
-            ),
-            &stack,
-            session,
-            BasisMode::Lagrange,
-        )
+    let proof = { let native_setup = &setup; let native_opening = prove_input::<Cfg>(
+        &pt[..],
+        &openings,
+        &commitments[0],
+        hints.into_iter().next().unwrap(),
+        scheme.schedules(),
+    ); let native_session = session; let native_basis = BasisMode::Lagrange; akita_pcs::prepare_native_prover_context(native_setup.expanded.descriptor(), scheme.schedules(), &native_opening, native_session, &[], native_basis, 0).and_then(|native_context| scheme.batched_prove(native_setup, native_opening, &stack, native_session, native_context.registry(), native_context.augmentation(), native_basis)) }
         .expect("batched onehot prove");
     scheme
         .verifier(verifier_setup.clone())
         .and_then(|verifier| {
-            verifier.batched_verify(
-                &proof,
-                session,
-                verify_input::<Cfg>(
-                    &pt[..],
-                    opening_groups[0],
-                    &commitments[0],
-                    scheme.schedules(),
-                ),
-                BasisMode::Lagrange,
-            )
+            { let native_statement = verify_input::<Cfg>(
+                &pt[..],
+                opening_groups[0],
+                &commitments[0],
+                scheme.schedules(),
+            ); let native_session = session; let native_basis = BasisMode::Lagrange; akita_pcs::prepare_native_proof_context(verifier.setup().expanded().descriptor(), verifier.schedules(), &native_statement, native_session, &[], native_basis, 0).and_then(|native_context| verifier.batched_verify(&proof, native_session, native_context.registry(), native_context.augmentation(), native_statement, native_basis)) }
         })
         .expect("batched onehot verify");
 }

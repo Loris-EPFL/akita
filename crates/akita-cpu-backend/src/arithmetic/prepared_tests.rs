@@ -94,6 +94,7 @@ fn cpu_prepared_setup_builds_only_requested_ntt_slots() {
         .prepare_setup(&setup)
         .expect("prepared");
     let partial_key = NttCacheKey {
+        matrix: None,
         ring_d: D,
         num_ring_elements: 1,
         domain: NttTransformDomain::Negacyclic,
@@ -107,6 +108,7 @@ fn cpu_prepared_setup_builds_only_requested_ntt_slots() {
     assert_eq!(cache.len(), 1);
     drop(cache);
     let miss = NttCacheKey {
+        matrix: None,
         ring_d: D,
         num_ring_elements: 99_999,
         domain: NttTransformDomain::Negacyclic,
@@ -121,6 +123,7 @@ fn concurrent_same_key_ntt_warm_builds_once() {
         .prepare_expanded(setup.expanded.clone())
         .expect("empty prepared setup");
     let key = NttCacheKey {
+        matrix: None,
         ring_d: D,
         num_ring_elements: 2,
         domain: NttTransformDomain::Negacyclic,
@@ -148,6 +151,7 @@ fn concurrent_same_key_ntt_warm_builds_once() {
 fn larger_initialized_prefix_covers_smaller_request() {
     let prepared = prepared();
     let covering_key = NttCacheKey {
+        matrix: None,
         ring_d: D,
         num_ring_elements: 8,
         domain: NttTransformDomain::Negacyclic,
@@ -173,11 +177,13 @@ fn larger_initialized_prefix_covers_smaller_request() {
 fn larger_request_replaces_smaller_cached_prefix() {
     let prepared = prepared();
     let small = NttCacheKey {
+        matrix: None,
         ring_d: D,
         num_ring_elements: 3,
         domain: NttTransformDomain::Negacyclic,
     };
     let large = NttCacheKey {
+        matrix: None,
         ring_d: D,
         num_ring_elements: 8,
         domain: NttTransformDomain::Negacyclic,
@@ -198,11 +204,13 @@ fn larger_request_replaces_smaller_cached_prefix() {
 fn failed_growth_retains_smaller_cached_prefix() {
     let prepared = prepared();
     let small = NttCacheKey {
+        matrix: None,
         ring_d: D,
         num_ring_elements: 3,
         domain: NttTransformDomain::Negacyclic,
     };
     let oversized = NttCacheKey {
+        matrix: None,
         ring_d: D,
         num_ring_elements: D + 1,
         domain: NttTransformDomain::Negacyclic,
@@ -234,6 +242,7 @@ fn concurrent_prefix_growth_retains_only_the_maximum() {
                     .ensure_ntt_slot(
                         prepared,
                         NttCacheKey {
+                            matrix: None,
                             ring_d: D,
                             num_ring_elements,
                             domain: NttTransformDomain::Cyclic,
@@ -247,6 +256,7 @@ fn concurrent_prefix_growth_retains_only_the_maximum() {
     let cache = prepared.shared_ntt.lock().unwrap();
     assert_eq!(cache.len(), 1);
     assert!(cache.contains_key(&NttCacheKey {
+        matrix: None,
         ring_d: D,
         num_ring_elements: 8,
         domain: NttTransformDomain::Cyclic,
@@ -257,11 +267,13 @@ fn concurrent_prefix_growth_retains_only_the_maximum() {
 fn failed_oversized_warm_does_not_cover_valid_request() {
     let prepared = prepared();
     let oversized = NttCacheKey {
+        matrix: None,
         ring_d: D,
         num_ring_elements: D + 1,
         domain: NttTransformDomain::Negacyclic,
     };
     let valid = NttCacheKey {
+        matrix: None,
         ring_d: D,
         num_ring_elements: 3,
         domain: NttTransformDomain::Negacyclic,
@@ -285,11 +297,13 @@ fn failed_oversized_warm_does_not_cover_valid_request() {
 fn concurrent_failed_growth_leaves_valid_prefix_recoverable() {
     let prepared = prepared();
     let oversized = NttCacheKey {
+        matrix: None,
         ring_d: D,
         num_ring_elements: D + 1,
         domain: NttTransformDomain::Cyclic,
     };
     let valid = NttCacheKey {
+        matrix: None,
         ring_d: D,
         num_ring_elements: 8,
         domain: NttTransformDomain::Cyclic,
@@ -340,11 +354,13 @@ fn ring_switch_d_role_prepares_both_domains_at_exact_extent() {
 
     let cache = prepared.shared_ntt.lock().unwrap();
     assert!(cache.contains_key(&NttCacheKey {
+        matrix: None,
         ring_d: D,
         num_ring_elements: 10,
         domain: NttTransformDomain::Cyclic,
     }));
     assert!(cache.contains_key(&NttCacheKey {
+        matrix: None,
         ring_d: D,
         num_ring_elements: 10,
         domain: NttTransformDomain::Negacyclic,
@@ -380,6 +396,7 @@ fn cyclic_only_ring_switch_rows_do_not_prepare_negacyclic_state() {
     assert!(rows.a_quotients.is_empty());
     let cache = prepared.shared_ntt.lock().unwrap();
     assert!(cache.contains_key(&NttCacheKey {
+        matrix: None,
         ring_d: D,
         num_ring_elements: 6,
         domain: NttTransformDomain::Cyclic,
@@ -443,6 +460,7 @@ fn relation_prewarm_joins_d_a_b_prefixes_before_kernel_execution() {
     assert!(metrics.iter().any(|metric| {
         metric.key
             == NttCacheKey {
+                matrix: None,
                 ring_d: D,
                 num_ring_elements: cyclic_extent,
                 domain: NttTransformDomain::Cyclic,
@@ -451,6 +469,7 @@ fn relation_prewarm_joins_d_a_b_prefixes_before_kernel_execution() {
     assert!(metrics.iter().any(|metric| {
         metric.key
             == NttCacheKey {
+                matrix: None,
                 ring_d: D,
                 num_ring_elements: negacyclic_extent,
                 domain: NttTransformDomain::Negacyclic,
@@ -498,4 +517,130 @@ fn relation_prewarm_joins_d_a_b_prefixes_before_kernel_execution() {
         backend.ensure_ntt_slot(&prepared, key).unwrap();
     }
     assert_eq!(prepared.ntt_slot_build_count(), 2);
+}
+
+#[test]
+fn installed_matrix_laws_preserve_coefficients_and_cache_ownership() {
+    use akita_params::FlatMatrix;
+    use akita_types::{FullRingMatrixDescriptor, FullRingSetupDescriptor, InstalledFullRingSetup};
+    use jolt_field::{Prime128OffsetA7F7, Ring, Zero};
+    type K = Prime128OffsetA7F7;
+    use akita_types::FullRingMatrixRole::*;
+    use akita_types::{FullRingCommitmentRoles, FullRingSetupSource, FullRingSourceId};
+    let source = FullRingSourceId(0);
+    let a = A { source };
+    let b = TerminalA;
+    let descriptors = [
+        (a, 128, 1),
+        (B { source }, 128, 26),
+        (F { source, stage: 0 }, 16, 1024),
+        (F { source, stage: 1 }, 8, 256),
+        (D, 128, 52),
+        (H { stage: 0 }, 16, 1024),
+        (H { stage: 1 }, 8, 256),
+        (b, 128, 1),
+    ]
+    .into_iter()
+    .map(|(role, ring_dimension, columns)| FullRingMatrixDescriptor {
+        role,
+        ring_dimension,
+        rows: 1,
+        columns,
+        original_descriptor: Arc::from(&b"original-role"[..]),
+    })
+    .collect();
+    let descriptor = Arc::new(
+        FullRingSetupDescriptor::outer_direct(
+            [9; 32],
+            Arc::from(&b"authenticated-test-installation"[..]),
+            vec![FullRingSetupSource {
+                id: source,
+                polynomials: 1,
+                blocks: 1,
+                positions: 1,
+                digit_depth: 1,
+                rank: 1,
+                raw_view: akita_types::full_ring::RawSourceViewPlan::new(128, 1, 1, 1, 1).unwrap(),
+                source_encoding: akita_params::CommittedSourceEncoding::CanonicalCoefficientTable,
+                commitment_roles: FullRingCommitmentRoles {
+                    inner: a,
+                    outer: Some(B { source }),
+                    compression: vec![F { source, stage: 0 }, F { source, stage: 1 }],
+                },
+            }],
+            1,
+            1,
+            descriptors,
+        )
+        .unwrap(),
+    );
+    let registered = FullRingSetupDescriptor::from_registered_inventory(
+        descriptor.installation_id(),
+        Arc::from(descriptor.original_descriptor()),
+        descriptor.sources().to_vec(),
+        descriptor.matrices().cloned().collect(),
+        descriptor.levels().to_vec(),
+    )
+    .unwrap();
+    let matrices = descriptor
+        .matrices()
+        .map(|matrix| {
+            let mut coefficients = vec![K::zero(); matrix.coefficient_count().unwrap()];
+            coefficients[0] = K::from_u64(if matrix.role == a { 3 } else { 7 });
+            (matrix.role, FlatMatrix::from_flat_data(coefficients))
+        })
+        .collect();
+    let setup = Arc::new(InstalledFullRingSetup::from_provisioned(descriptor, matrices).unwrap());
+    let backend = CpuBackend::<K, K>::from_full_ring_setup(setup.clone()).unwrap();
+    let prepared_a = backend.full_ring_prepared(a).unwrap();
+    let prepared_b = backend.full_ring_prepared(b).unwrap();
+    assert!(prepared_a.expanded().is_err());
+    assert!(std::ptr::eq(prepared_a.matrix(), setup.matrix(a).unwrap()));
+    let mut unit = [[0i8; 128]; 1];
+    unit[0][0] = 1;
+    let out_a = backend
+        .digit_rows::<128>(prepared_a, 1, &[&unit], 2)
+        .unwrap();
+    let out_b = backend
+        .digit_rows::<128>(prepared_b, 1, &[&unit], 2)
+        .unwrap();
+    assert_eq!(out_a[0][0].coefficients()[0], K::from_u64(3));
+    assert_eq!(out_b[0][0].coefficients()[0], K::from_u64(7));
+    let key_a = *prepared_a.shared_ntt.lock().unwrap().keys().next().unwrap();
+    let key_b = *prepared_b.shared_ntt.lock().unwrap().keys().next().unwrap();
+    assert_ne!(key_a, key_b);
+    assert!(key_a.join(key_b).is_err());
+    assert!(backend.ensure_ntt_slot(prepared_b, key_a).is_err());
+    let other = CpuBackend::<K, K>::from_full_ring_setup(setup).unwrap();
+    assert!(crate::opaque::OperationCtx::for_full_ring(&other, prepared_a).is_err());
+
+    let native = akita_types::AkitaSetupDescriptor {
+        max_num_vars: 7,
+        max_num_batched_polys: 1,
+        num_field_elements: registered.required_shared_coefficients().unwrap(),
+        setup_seed: [11; 32].into(),
+    };
+    let expanded = Arc::new(akita_types::AkitaExpandedSetup {
+        shared_matrix: akita_types::derive_public_matrix_prefix::<K>(
+            native.num_field_elements,
+            &native.setup_seed,
+        ),
+        descriptor: native,
+    });
+    let shared =
+        Arc::new(InstalledFullRingSetup::from_shared_prefix(registered, expanded.clone()).unwrap());
+    let backend = CpuBackend::<K, K>::from_full_ring_setup(shared.clone()).unwrap();
+    let prepared_a = backend.full_ring_prepared(a).unwrap();
+    let prepared_b = backend.full_ring_prepared(b).unwrap();
+    assert!(std::ptr::eq(prepared_a, prepared_b));
+    for prepared in [prepared_a, prepared_b] {
+        let output = backend.digit_rows::<128>(prepared, 1, &[&unit], 2).unwrap();
+        assert_eq!(
+            output[0][0].coefficients(),
+            &expanded.shared_matrix.as_field_slice()[..128],
+        );
+        crate::opaque::OperationCtx::for_full_ring(&backend, prepared).unwrap();
+    }
+    let other = CpuBackend::<K, K>::from_full_ring_setup(shared).unwrap();
+    assert!(crate::opaque::OperationCtx::for_full_ring(&other, prepared_a).is_err());
 }

@@ -27,12 +27,22 @@ type NttSlotCell = OnceLock<Result<Arc<ErasedCpuNttCache>, AkitaError>>;
 /// separate namespace.
 #[derive(Debug)]
 pub struct CpuPreparedSetup<F: Field> {
-    pub(crate) expanded: Arc<AkitaExpandedSetup<F>>,
+    material: CpuSetupMaterial<F>,
     pub(super) shared_ntt: Mutex<HashMap<NttCacheKey, Arc<NttSlotCell>>>,
     pub(super) compression_ntt: CompressionNttCache,
     ntt_i8_capacity_by_ring_d: Mutex<HashMap<usize, CrtI8CapacityProfile>>,
     #[cfg(test)]
     pub(super) ntt_slot_build_count: AtomicUsize,
+}
+
+#[derive(Debug)]
+enum CpuSetupMaterial<F: Field> {
+    SharedPrefix(Arc<AkitaExpandedSetup<F>>),
+    FullRing {
+        descriptor: Arc<akita_types::FullRingSetupDescriptor>,
+        role: akita_types::FullRingMatrixRole,
+        matrix: Arc<akita_params::FlatMatrix<F>>,
+    },
 }
 
 pub(super) struct ErasedCpuNttCache {
@@ -94,14 +104,83 @@ impl From<CrtI8CapacityProfile> for PreparedCrtNttProfile {
 }
 
 impl<F: Field + CanonicalEncoding> CpuPreparedSetup<F> {
-    /// Expanded setup backing source-specific CPU commitment kernels.
-    pub fn expanded(&self) -> &AkitaExpandedSetup<F> {
-        &self.expanded
+    /// Borrow the native shared setup; independently keyed outer roles have none.
+    pub fn expanded(&self) -> Result<&AkitaExpandedSetup<F>, AkitaError> {
+        self.shared_expanded().map(Arc::as_ref)
+    }
+
+    pub(crate) fn shared_expanded(&self) -> Result<&Arc<AkitaExpandedSetup<F>>, AkitaError> {
+        match &self.material {
+            CpuSetupMaterial::SharedPrefix(expanded) => Ok(expanded),
+            CpuSetupMaterial::FullRing { .. } => Err(AkitaError::InvalidSetup(
+                "independent outer role has no shared-prefix setup".into(),
+            )),
+        }
+    }
+
+    /// Exact backing coefficients, without copying or seed expansion.
+    pub fn matrix(&self) -> &akita_params::FlatMatrix<F> {
+        match &self.material {
+            CpuSetupMaterial::SharedPrefix(expanded) => expanded.shared_matrix(),
+            CpuSetupMaterial::FullRing { matrix, .. } => matrix,
+        }
+    }
+
+    /// Independent outer role; native shared views use their backend registry.
+    pub fn full_ring_role(&self) -> Option<akita_types::FullRingMatrixRole> {
+        match &self.material {
+            CpuSetupMaterial::SharedPrefix(_) => None,
+            CpuSetupMaterial::FullRing { role, .. } => Some(*role),
+        }
+    }
+
+    fn bind_cache_key(&self, mut key: NttCacheKey) -> Result<NttCacheKey, AkitaError> {
+        let identity = match &self.material {
+            CpuSetupMaterial::SharedPrefix(_) => None,
+            CpuSetupMaterial::FullRing {
+                descriptor, role, ..
+            } => {
+                let shape = descriptor.matrix(*role)?;
+                if key.ring_d != shape.ring_dimension
+                    || key.num_field_elements()? > shape.coefficient_count()?
+                {
+                    return Err(AkitaError::InvalidSetup(
+                        "NTT request changes installed role geometry".into(),
+                    ));
+                }
+                Some(akita_types::ntt_cache::InstalledMatrixIdentity {
+                    installation: descriptor.installation_id(),
+                    role: *role,
+                })
+            }
+        };
+        if key.matrix.is_some() && key.matrix != identity {
+            return Err(AkitaError::InvalidSetup(
+                "NTT request belongs to another installed matrix".into(),
+            ));
+        }
+        key.matrix = identity;
+        Ok(key)
+    }
+
+    pub(crate) fn from_full_ring(
+        setup: &akita_types::InstalledFullRingSetup<F>,
+        role: akita_types::FullRingMatrixRole,
+    ) -> Result<Self, AkitaError> {
+        Ok(Self::from_material(CpuSetupMaterial::FullRing {
+            descriptor: setup.descriptor().clone(),
+            role,
+            matrix: setup.shared_matrix(role)?,
+        }))
     }
 
     pub(crate) fn new(expanded: Arc<AkitaExpandedSetup<F>>) -> Self {
+        Self::from_material(CpuSetupMaterial::SharedPrefix(expanded))
+    }
+
+    fn from_material(material: CpuSetupMaterial<F>) -> Self {
         Self {
-            expanded,
+            material,
             shared_ntt: Mutex::new(HashMap::new()),
             compression_ntt: CompressionNttCache::default(),
             ntt_i8_capacity_by_ring_d: Mutex::new(HashMap::new()),
@@ -126,10 +205,10 @@ impl<F: Field + CanonicalEncoding> CpuPreparedSetup<F> {
             ));
         }
         let required_num_field_elements = key.num_field_elements()?;
-        if required_num_field_elements > self.expanded.shared_matrix.num_field_elements() {
+        if required_num_field_elements > self.matrix().num_field_elements() {
             return Err(AkitaError::InvalidSetup(format!(
                 "NTT prefix requires {required_num_field_elements} field elements but setup has {}",
-                self.expanded.shared_matrix.num_field_elements()
+                self.matrix().num_field_elements()
             )));
         }
         let slot = prepare_ntt_slot_on_prepared(self, key)?;
@@ -152,8 +231,14 @@ impl<F: Field + CanonicalEncoding> CpuPreparedSetup<F> {
         domains: super::compression_cache::CompressionNttDomains,
         f: impl FnOnce(&PreparedNttCache<D>) -> Result<R, AkitaError>,
     ) -> Result<R, AkitaError> {
+        let key = self.bind_cache_key(NttCacheKey::from_matrix_shape(
+            D,
+            1,
+            input_width,
+            NttTransformDomain::Negacyclic,
+        )?)?;
         self.compression_ntt
-            .with_ntt(self.expanded.as_ref(), input_width, domains, f)
+            .with_ntt(self.matrix(), key.matrix, input_width, domains, f)
     }
 
     /// In-memory byte footprint of all shared setup NTT caches.
@@ -270,13 +355,11 @@ impl<F: Field + CanonicalEncoding> CpuPreparedSetup<F> {
 }
 
 fn build_ntt_slot_for_key<F: Field + CanonicalEncoding>(
-    expanded: &AkitaExpandedSetup<F>,
+    matrix: &akita_params::FlatMatrix<F>,
     key: NttCacheKey,
 ) -> Result<ErasedCpuNttCache, AkitaError> {
     dispatch_for_field!(ProtocolDispatchSlot::Ntt, F, key.ring_d, |RING_D| {
-        let view = expanded
-            .shared_matrix()
-            .ring_view::<RING_D>(1, key.num_ring_elements)?;
+        let view = matrix.ring_view::<RING_D>(1, key.num_ring_elements)?;
         let mode = match key.domain {
             NttTransformDomain::Negacyclic => NttCacheMode::Negacyclic,
             NttTransformDomain::Cyclic => NttCacheMode::Cyclic,
@@ -316,6 +399,7 @@ fn prepare_ntt_slot_on_prepared<F: Field + CanonicalEncoding>(
     prepared: &CpuPreparedSetup<F>,
     requested_key: NttCacheKey,
 ) -> Result<Arc<ErasedCpuNttCache>, AkitaError> {
+    let requested_key = prepared.bind_cache_key(requested_key)?;
     let profile = dispatch_for_field!(
         ProtocolDispatchSlot::Ntt,
         F,
@@ -332,6 +416,7 @@ fn prepare_ntt_slot_on_prepared<F: Field + CanonicalEncoding>(
                 .iter()
                 .filter(|(key, _)| {
                     key.ring_d == requested_key.ring_d
+                        && key.matrix == requested_key.matrix
                         && key.domain == requested_key.domain
                         && key.num_ring_elements >= requested_key.num_ring_elements
                 })
@@ -350,7 +435,7 @@ fn prepare_ntt_slot_on_prepared<F: Field + CanonicalEncoding>(
             prepared
                 .ntt_slot_build_count
                 .fetch_add(1, Ordering::Relaxed);
-            build_ntt_slot_for_key(prepared.expanded.as_ref(), key).map(Arc::new)
+            build_ntt_slot_for_key(prepared.matrix(), key).map(Arc::new)
         });
         match build_result {
             Ok(slot) => {
@@ -364,6 +449,7 @@ fn prepare_ntt_slot_on_prepared<F: Field + CanonicalEncoding>(
                     .map_err(|_| AkitaError::Internal("NTT cache lock poisoned".into()))?;
                 cache.retain(|cached_key, _| {
                     cached_key.ring_d != key.ring_d
+                        || cached_key.matrix != key.matrix
                         || cached_key.domain != key.domain
                         || cached_key.num_ring_elements >= key.num_ring_elements
                 });
@@ -459,7 +545,14 @@ where
     fn prepared_expanded_setup<'a>(
         &self,
         prepared: &'a Self::PreparedSetup,
-    ) -> &'a AkitaExpandedSetup<F> {
-        prepared.expanded.as_ref()
+    ) -> Result<&'a AkitaExpandedSetup<F>, AkitaError> {
+        prepared.expanded()
+    }
+
+    fn prepared_matrix<'a>(
+        &self,
+        prepared: &'a Self::PreparedSetup,
+    ) -> Result<&'a akita_params::FlatMatrix<F>, AkitaError> {
+        Ok(prepared.matrix())
     }
 }

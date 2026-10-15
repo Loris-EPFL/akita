@@ -170,7 +170,7 @@ pub struct CoefficientPackingGroupSemantics<'a, E: Field> {
     pub(super) alpha_powers: Vec<E>,
     pub(super) basis: Vec<E>,
     pub(super) opening_gadget: Vec<E>,
-    pub(super) witness_gadget: Vec<E>,
+    pub(super) source_opening_weights: Vec<E>,
     pub(super) fold_gadget: Vec<E>,
 }
 
@@ -308,9 +308,10 @@ impl<'a, E: Field> CoefficientPackingGroupSemantics<'a, E> {
         &self.opening_gadget
     }
 
+    /// Public source-opening query factor, not an A/source decomposition gadget.
     #[must_use]
-    pub fn witness_gadget(&self) -> &[E] {
-        &self.witness_gadget
+    pub fn source_opening_weights(&self) -> &[E] {
+        &self.source_opening_weights
     }
 
     #[must_use]

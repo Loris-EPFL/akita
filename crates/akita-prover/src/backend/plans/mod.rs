@@ -312,6 +312,7 @@ pub struct ValidatedRecursiveGroupOpeningPlan<'a, E: Field> {
     live_blocks: usize,
     alpha_bits: usize,
     opening_method: akita_params::OpeningMethod,
+    source_view: akita_params::SourceOpeningView,
     witness_len: usize,
 }
 
@@ -326,6 +327,7 @@ impl<'a, E: Field> ValidatedRecursiveGroupOpeningPlan<'a, E> {
         alpha_bits: usize,
         opening_method: akita_params::OpeningMethod,
         witness_len: usize,
+        source_view: akita_params::SourceOpeningView,
     ) -> Self {
         Self {
             point,
@@ -336,6 +338,7 @@ impl<'a, E: Field> ValidatedRecursiveGroupOpeningPlan<'a, E> {
             alpha_bits,
             opening_method,
             witness_len,
+            source_view,
         }
     }
     pub const fn point(&self) -> &'a [E] {
@@ -361,6 +364,10 @@ impl<'a, E: Field> ValidatedRecursiveGroupOpeningPlan<'a, E> {
     }
     pub const fn witness_len(&self) -> usize {
         self.witness_len
+    }
+    /// Approved query view; logical witness/source length remains unchanged.
+    pub const fn source_view(&self) -> akita_params::SourceOpeningView {
+        self.source_view
     }
 }
 

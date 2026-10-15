@@ -18,6 +18,7 @@ where
     E: ExtField<F> + akita_types::FpExtEncoding<F> + MulBaseUnreduced<F>,
 {
     let point = fused_weights.point();
+    SubringCoefficientPackingPlan { point }.validate_decoded()?;
     let view = witness.view::<F, D>()?;
     if view.live_ring_elems != point.num_live_positions() {
         return Err(AkitaError::InvalidSize {
@@ -61,6 +62,7 @@ where
         source: SuffixWitnessBatchView<'_, F, D>,
         plan: SubringCoefficientPackingPlan<'_, E>,
     ) -> Result<Vec<SubringCoefficientPackingPartials<F>>, AkitaError> {
+        plan.validate_decoded()?;
         let fused_weights = FusedPackingWeights::new(plan.point)?;
         source
             .polys

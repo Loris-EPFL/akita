@@ -290,7 +290,7 @@ fn materialize_independent_oracles(
             .iter()
             .enumerate()
         {
-            for (witness_digit, &witness_weight) in semantics.witness_gadget().iter().enumerate() {
+            for (witness_digit, &source_opening_weight) in semantics.source_opening_weights().iter().enumerate() {
                 for (fold_digit, &fold_weight) in semantics.fold_gadget().iter().enumerate() {
                     let physical_start = unit
                         .z_coefficient_index(
@@ -306,7 +306,7 @@ fn materialize_independent_oracles(
                         .unwrap();
                     let factor = -(semantics.consistency_weight()
                         * position_weight
-                        * witness_weight
+                        * source_opening_weight
                         * fold_weight);
                     for (coefficient, &source) in packing_z_source.iter().enumerate() {
                         packing_z[physical_start + coefficient] += factor * source;
@@ -729,4 +729,105 @@ fn recursive_packing_phases_share_one_relation_authority() {
     let semantics = &packing_semantics.groups()[0];
     let prepared = prepare_coefficient_packing_linear_terms(semantics.clone()).unwrap();
     assert_eq!(prepared.materialize_dense(), materialize_shared(semantics),);
+}
+
+#[test]
+fn raw_packing_z_uses_eq_digits_without_changing_physical_or_response_widths() {
+    type K = jolt_field::Prime128OffsetA7F7;
+    let config = SparseChallengeConfig::production_for_ring_dim(128).unwrap();
+    let mut params = akita_params::CommittedGroupParams::params_only(
+        SisModulusProfileId::Q128OffsetA7F7, 128, 5, 3, 1, 1, config,
+    ).with_decomp(32, 512, 26, 26, 26).unwrap();
+    params.payload_mode = CommitmentPayloadMode::Raw;
+    params.own_group_mut().profile.group = akita_params::PolynomialGroupLayout::new(16, 1);
+    params.own_group_mut().opening.source_view = akita_params::SourceOpeningView::OriginalRamPlanesV1;
+    params.own_group_mut().opening.opening_method = OpeningMethod::SubringCoefficientPacking {
+        challenge_subring_dimension: 128,
+    };
+    params.own_group_mut().opening.num_digits_fold = 3;
+    let opening_batch = params.opening_layout_for_final_group(params.group()).unwrap();
+    let geometry = SubringCoefficientPackingGeometry::try_new(1, 128, 128).unwrap();
+    let relation_geometry = RelationWitnessGeometry::for_level(&params, &opening_batch, 1).unwrap();
+    let layout = WitnessLayout::new(
+        &params, &opening_batch, &relation_geometry, 1,
+        akita_params::RelationQuotientPlan::quotient_lift(r_decomp_levels::<K>(5)).unwrap(),
+    ).unwrap();
+    let address = RelationAddressGeometry::for_relation(&relation_geometry, 128, layout.live_coeff_len()).unwrap();
+    let relation_plan = RelationRangeImagePlan::new(
+        relation_geometry.clone(), address, DigitRangePlan::new(32).unwrap(), layout, &opening_batch,
+    ).unwrap();
+    let shell = Challenges::from_sparse(
+        (0..16).map(|block| SparseChallenge {
+            positions: (0..config.weight()).map(|term| ((term + block) % 128) as u32).collect(),
+            coeffs: (0..config.count_pm1).map(|term| if term % 2 == 0 { 1 } else { -1 })
+                .chain((0..config.count_pm2).map(|_| 2)).collect(),
+        }).collect(),
+        16, 1,
+    ).unwrap();
+    // Relation rows are indexed by claims, not by the source's live blocks.
+    let ring_dim = params.role_dims().d_a();
+    let claim_count = opening_batch.num_total_polynomials();
+    let gamma = (0..claim_count)
+        .map(|claim| K::from_u64(claim as u64 + 3))
+        .collect::<Vec<_>>();
+    let mut scalar_e = vec![K::zero(); claim_count * ring_dim];
+    for (claim, &coefficient) in gamma.iter().enumerate() {
+        scalar_e[claim * ring_dim] = coefficient;
+    }
+    let relation = RingRelationInstance::new(
+        vec![RingRelationGroupOpening::coefficient_packing(CoefficientPackingChallenges::new(geometry, shell).unwrap())],
+        1, opening_batch.clone(), gamma,
+        RingVec::from_coeffs_with_ring_dim(scalar_e, ring_dim).unwrap(),
+        RingVec::from_coeffs(vec![K::zero(); relation_rhs_coeff_len(relation_geometry.rhs_layout()).unwrap()]),
+        params.role_dims(),
+    ).unwrap();
+    let tau1 = (0..relation_plan.relation_row_index_num_vars().unwrap())
+        .map(|i| K::from_u64(i as u64 + 7)).collect::<Vec<_>>();
+    let coefficients = [K::from_u64(11)];
+    for boolean_digit in [false, true] {
+        let mut query = (0..21).map(|i| K::from_u64(i as u64 + 2)).collect::<Vec<_>>();
+        if boolean_digit {
+            // Raw digit25: weight0=0 is legal, and the top plane is retained.
+            for bit in 0..5 { query[7 + bit] = K::from_u64((25 >> bit & 1) as u64); }
+        }
+        let point = PreparedSubringCoefficientPackingPoint::new_original_ram_planes(
+            geometry, BasisMode::Lagrange, 512, 32, 16, &query,
+        ).unwrap();
+        let points = [(0, &point)];
+        let batch = prepare_coefficient_packing_batch_semantics(CoefficientPackingBatchSemanticInputs {
+            level_params: &params, opening_batch: &opening_batch, relation_plan: &relation_plan,
+            relation: &relation, prepared_points: &points, alpha: K::from_u64(17),
+            tau1: &tau1, claim_coefficients: &coefficients,
+        }).unwrap();
+        let semantics = &batch.groups()[0];
+        assert_eq!(semantics.opening_gadget().len(), 26);
+        assert_eq!(semantics.fold_gadget().len(), 3);
+        assert_eq!(semantics.source_opening_weights().len(), 26);
+        let mut expected = std::collections::BTreeMap::new();
+        for unit in semantics.witness_units() {
+            for position in 0..32 {
+                for digit in 0..26 {
+                    let eq_digit = query[7..12].iter().enumerate().fold(K::one(), |w, (bit, &r)| {
+                        w * if digit >> bit & 1 == 0 { K::one() - r } else { r }
+                    });
+                    for (fold_digit, &fold_weight) in semantics.fold_gadget().iter().enumerate() {
+                        let physical = unit.z_coefficient_index(128, 32, 26, 3, position, digit, fold_digit, 0).unwrap();
+                        expected.insert(physical, -(semantics.consistency_weight()
+                            * point.position_weights()[position] * eq_digit * fold_weight));
+                    }
+                }
+            }
+        }
+        let (_, segments, terms) = CpuCoefficientPackingTerms::new(semantics).unwrap().into_linear_parts();
+        let mut count = 0;
+        for term in terms.iter().filter(|term| matches!(term.source(), CpuCoefficientPackingSource::PackingZ)) {
+            for segment in &segments[term.segments()] {
+                assert_eq!(segment.physical_coefficients().len(), ring_dim);
+                assert_eq!(term.factor(), expected.remove(&segment.physical_coefficients().start).unwrap());
+                count += 1;
+            }
+        }
+        assert_eq!(count, semantics.witness_units().len() * 32 * 26 * 3);
+        assert!(expected.is_empty());
+    }
 }

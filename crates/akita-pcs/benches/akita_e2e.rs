@@ -151,11 +151,7 @@ fn bench_dense_phases<const D: usize, Cfg: CommitmentConfig<Field = F, ExtField 
     let commitments = [commitment];
     let openings = [opening];
     let selection = scheme
-        .schedules()
-        .resolve_profiles(&CommittedGroupBatchProfile {
-            final_group: *commitments[0].profile(),
-            precommitteds: Vec::new(),
-        })
+        .schedules().resolve_profiles(&CommittedGroupBatchProfile { final_group: *commitments[0].profile(), precommitteds: Vec::new() }, &[akita_params::SourceOpeningView::Decoded])
         .expect("select generated schedule row")
         .selection();
 
@@ -169,20 +165,13 @@ fn bench_dense_phases<const D: usize, Cfg: CommitmentConfig<Field = F, ExtField 
             || vec![hint.clone()],
             |h| {
                 black_box(
-                    scheme
-                        .batched_prove(
-                            &setup,
-                            prover_claims::<Cfg>(
-                                scheme.schedules(),
-                                &pt[..],
-                                &openings[..],
-                                &commitments[0],
-                                h.into_iter().next().unwrap(),
-                            ),
-                            &stack,
-                            b"bench",
-                            BasisMode::Lagrange,
-                        )
+                    { let native_setup = &setup; let native_opening = prover_claims::<Cfg>(
+                        scheme.schedules(),
+                        &pt[..],
+                        &openings[..],
+                        &commitments[0],
+                        h.into_iter().next().unwrap(),
+                    ); let native_session = b"bench"; let native_basis = BasisMode::Lagrange; akita_pcs::prepare_native_prover_context(native_setup.expanded.descriptor(), scheme.schedules(), &native_opening, native_session, &[], native_basis, 0).and_then(|native_context| scheme.batched_prove(native_setup, native_opening, &stack, native_session, native_context.registry(), native_context.augmentation(), native_basis)) }
                         .unwrap(),
                 )
             },
@@ -190,36 +179,23 @@ fn bench_dense_phases<const D: usize, Cfg: CommitmentConfig<Field = F, ExtField 
         )
     });
 
-    let proof = scheme
-        .batched_prove(
-            &setup,
-            prover_claims::<Cfg>(
-                scheme.schedules(),
-                &pt[..],
-                &openings[..],
-                &commitments[0],
-                hint.clone(),
-            ),
-            &stack,
-            b"bench",
-            BasisMode::Lagrange,
-        )
+    let proof = { let native_setup = &setup; let native_opening = prover_claims::<Cfg>(
+        scheme.schedules(),
+        &pt[..],
+        &openings[..],
+        &commitments[0],
+        hint.clone(),
+    ); let native_session = b"bench"; let native_basis = BasisMode::Lagrange; akita_pcs::prepare_native_prover_context(native_setup.expanded.descriptor(), scheme.schedules(), &native_opening, native_session, &[], native_basis, 0).and_then(|native_context| scheme.batched_prove(native_setup, native_opening, &stack, native_session, native_context.registry(), native_context.augmentation(), native_basis)) }
         .unwrap();
 
     group.bench_function(format!("verify/{mode_label}"), |b| {
         b.iter(|| {
-            verifier
-                .batched_verify(
-                    black_box(&proof),
-                    b"bench",
-                    black_box(verifier_claims(
-                        selection,
-                        &pt[..],
-                        &openings[..],
-                        &commitments[0],
-                    )),
-                    BasisMode::Lagrange,
-                )
+            { let native_statement = black_box(verifier_claims(
+                selection,
+                &pt[..],
+                &openings[..],
+                &commitments[0],
+            )); let native_session = b"bench"; let native_basis = BasisMode::Lagrange; akita_pcs::prepare_native_proof_context(verifier.setup().expanded().descriptor(), verifier.schedules(), &native_statement, native_session, &[], native_basis, 0).and_then(|native_context| verifier.batched_verify(black_box(&proof), native_session, native_context.registry(), native_context.augmentation(), native_statement, native_basis)) }
                 .unwrap();
         })
     });
@@ -228,31 +204,19 @@ fn bench_dense_phases<const D: usize, Cfg: CommitmentConfig<Field = F, ExtField 
     // the per-fold Stage-2 spans nested inside the public verification call.
     if measure_stage2 {
         relation_phase_timing::report(label, nv, 3, || {
-            verifier
-                .batched_verify(
-                    &proof,
-                    b"bench",
-                    verifier_claims(selection, &pt[..], &openings[..], &commitments[0]),
-                    BasisMode::Lagrange,
-                )
+            { let native_statement = verifier_claims(selection, &pt[..], &openings[..], &commitments[0]); let native_session = b"bench"; let native_basis = BasisMode::Lagrange; akita_pcs::prepare_native_proof_context(verifier.setup().expanded().descriptor(), verifier.schedules(), &native_statement, native_session, &[], native_basis, 0).and_then(|native_context| verifier.batched_verify(&proof, native_session, native_context.registry(), native_context.augmentation(), native_statement, native_basis)) }
                 .unwrap();
         });
 
         group.bench_function(format!("verify_all_stage2/{mode_label}"), |b| {
             b.iter_custom(|iterations| {
                 relation_phase_timing::measure_complete_stage2(iterations, || {
-                    verifier
-                        .batched_verify(
-                            black_box(&proof),
-                            b"bench",
-                            black_box(verifier_claims(
-                                selection,
-                                &pt[..],
-                                &openings[..],
-                                &commitments[0],
-                            )),
-                            BasisMode::Lagrange,
-                        )
+                    { let native_statement = black_box(verifier_claims(
+                        selection,
+                        &pt[..],
+                        &openings[..],
+                        &commitments[0],
+                    )); let native_session = b"bench"; let native_basis = BasisMode::Lagrange; akita_pcs::prepare_native_proof_context(verifier.setup().expanded().descriptor(), verifier.schedules(), &native_statement, native_session, &[], native_basis, 0).and_then(|native_context| verifier.batched_verify(black_box(&proof), native_session, native_context.registry(), native_context.augmentation(), native_statement, native_basis)) }
                         .unwrap();
                 })
             })
@@ -272,22 +236,9 @@ fn bench_dense_phases<const D: usize, Cfg: CommitmentConfig<Field = F, ExtField 
                 )
                 .unwrap();
             let cms = [cm];
-            let pf = scheme
-                .batched_prove(
-                    &setup,
-                    prover_claims::<Cfg>(scheme.schedules(), &pt[..], &openings[..], &cms[0], h),
-                    &stack,
-                    b"bench",
-                    BasisMode::Lagrange,
-                )
+            let pf = { let native_setup = &setup; let native_opening = prover_claims::<Cfg>(scheme.schedules(), &pt[..], &openings[..], &cms[0], h); let native_session = b"bench"; let native_basis = BasisMode::Lagrange; akita_pcs::prepare_native_prover_context(native_setup.expanded.descriptor(), scheme.schedules(), &native_opening, native_session, &[], native_basis, 0).and_then(|native_context| scheme.batched_prove(native_setup, native_opening, &stack, native_session, native_context.registry(), native_context.augmentation(), native_basis)) }
                 .unwrap();
-            verifier
-                .batched_verify(
-                    &pf,
-                    b"bench",
-                    verifier_claims(selection, &pt[..], &openings[..], &cms[0]),
-                    BasisMode::Lagrange,
-                )
+            { let native_statement = verifier_claims(selection, &pt[..], &openings[..], &cms[0]); let native_session = b"bench"; let native_basis = BasisMode::Lagrange; akita_pcs::prepare_native_proof_context(verifier.setup().expanded().descriptor(), verifier.schedules(), &native_statement, native_session, &[], native_basis, 0).and_then(|native_context| verifier.batched_verify(&pf, native_session, native_context.registry(), native_context.augmentation(), native_statement, native_basis)) }
                 .unwrap();
             black_box(())
         })
@@ -382,11 +333,7 @@ fn bench_onehot_phases<Cfg: CommitmentConfig<Field = F, ExtField = F>>(
     let commitments = [commitment];
     let openings = [opening];
     let selection = scheme
-        .schedules()
-        .resolve_profiles(&CommittedGroupBatchProfile {
-            final_group: *commitments[0].profile(),
-            precommitteds: Vec::new(),
-        })
+        .schedules().resolve_profiles(&CommittedGroupBatchProfile { final_group: *commitments[0].profile(), precommitteds: Vec::new() }, &[akita_params::SourceOpeningView::Decoded])
         .expect("select generated schedule row")
         .selection();
 
@@ -400,20 +347,13 @@ fn bench_onehot_phases<Cfg: CommitmentConfig<Field = F, ExtField = F>>(
             || vec![hint.clone()],
             |h| {
                 black_box(
-                    scheme
-                        .batched_prove(
-                            &setup,
-                            prover_claims::<Cfg>(
-                                scheme.schedules(),
-                                &pt[..],
-                                &openings[..],
-                                &commitments[0],
-                                h.into_iter().next().unwrap(),
-                            ),
-                            &stack,
-                            b"bench",
-                            BasisMode::Lagrange,
-                        )
+                    { let native_setup = &setup; let native_opening = prover_claims::<Cfg>(
+                        scheme.schedules(),
+                        &pt[..],
+                        &openings[..],
+                        &commitments[0],
+                        h.into_iter().next().unwrap(),
+                    ); let native_session = b"bench"; let native_basis = BasisMode::Lagrange; akita_pcs::prepare_native_prover_context(native_setup.expanded.descriptor(), scheme.schedules(), &native_opening, native_session, &[], native_basis, 0).and_then(|native_context| scheme.batched_prove(native_setup, native_opening, &stack, native_session, native_context.registry(), native_context.augmentation(), native_basis)) }
                         .unwrap(),
                 )
             },
@@ -421,36 +361,23 @@ fn bench_onehot_phases<Cfg: CommitmentConfig<Field = F, ExtField = F>>(
         )
     });
 
-    let proof = scheme
-        .batched_prove(
-            &setup,
-            prover_claims::<Cfg>(
-                scheme.schedules(),
-                &pt[..],
-                &openings[..],
-                &commitments[0],
-                hint.clone(),
-            ),
-            &stack,
-            b"bench",
-            BasisMode::Lagrange,
-        )
+    let proof = { let native_setup = &setup; let native_opening = prover_claims::<Cfg>(
+        scheme.schedules(),
+        &pt[..],
+        &openings[..],
+        &commitments[0],
+        hint.clone(),
+    ); let native_session = b"bench"; let native_basis = BasisMode::Lagrange; akita_pcs::prepare_native_prover_context(native_setup.expanded.descriptor(), scheme.schedules(), &native_opening, native_session, &[], native_basis, 0).and_then(|native_context| scheme.batched_prove(native_setup, native_opening, &stack, native_session, native_context.registry(), native_context.augmentation(), native_basis)) }
         .unwrap();
 
     group.bench_function(format!("verify/{mode_label}"), |b| {
         b.iter(|| {
-            verifier
-                .batched_verify(
-                    black_box(&proof),
-                    b"bench",
-                    black_box(verifier_claims(
-                        selection,
-                        &pt[..],
-                        &openings[..],
-                        &commitments[0],
-                    )),
-                    BasisMode::Lagrange,
-                )
+            { let native_statement = black_box(verifier_claims(
+                selection,
+                &pt[..],
+                &openings[..],
+                &commitments[0],
+            )); let native_session = b"bench"; let native_basis = BasisMode::Lagrange; akita_pcs::prepare_native_proof_context(verifier.setup().expanded().descriptor(), verifier.schedules(), &native_statement, native_session, &[], native_basis, 0).and_then(|native_context| verifier.batched_verify(black_box(&proof), native_session, native_context.registry(), native_context.augmentation(), native_statement, native_basis)) }
                 .unwrap();
         })
     });
@@ -468,22 +395,9 @@ fn bench_onehot_phases<Cfg: CommitmentConfig<Field = F, ExtField = F>>(
                 )
                 .unwrap();
             let cms = [cm];
-            let pf = scheme
-                .batched_prove(
-                    &setup,
-                    prover_claims::<Cfg>(scheme.schedules(), &pt[..], &openings[..], &cms[0], h),
-                    &stack,
-                    b"bench",
-                    BasisMode::Lagrange,
-                )
+            let pf = { let native_setup = &setup; let native_opening = prover_claims::<Cfg>(scheme.schedules(), &pt[..], &openings[..], &cms[0], h); let native_session = b"bench"; let native_basis = BasisMode::Lagrange; akita_pcs::prepare_native_prover_context(native_setup.expanded.descriptor(), scheme.schedules(), &native_opening, native_session, &[], native_basis, 0).and_then(|native_context| scheme.batched_prove(native_setup, native_opening, &stack, native_session, native_context.registry(), native_context.augmentation(), native_basis)) }
                 .unwrap();
-            verifier
-                .batched_verify(
-                    &pf,
-                    b"bench",
-                    verifier_claims(selection, &pt[..], &openings[..], &cms[0]),
-                    BasisMode::Lagrange,
-                )
+            { let native_statement = verifier_claims(selection, &pt[..], &openings[..], &cms[0]); let native_session = b"bench"; let native_basis = BasisMode::Lagrange; akita_pcs::prepare_native_proof_context(verifier.setup().expanded().descriptor(), verifier.schedules(), &native_statement, native_session, &[], native_basis, 0).and_then(|native_context| verifier.batched_verify(&pf, native_session, native_context.registry(), native_context.augmentation(), native_statement, native_basis)) }
                 .unwrap();
             black_box(())
         })

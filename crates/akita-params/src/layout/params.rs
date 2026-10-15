@@ -69,7 +69,7 @@ pub(crate) use descriptor::append_sparse_challenge_descriptor_bytes as append_sc
 use groups::FoldGroups;
 pub use precommitted::{
     opening_d_segment_width, GroupOpenPhaseParams, GroupOpeningPlan, OpeningMethod,
-    PrecommittedGroupAdmissionPolicy,
+    PrecommittedGroupAdmissionPolicy, QueryMapVersion, ScalarBasisId,
 };
 
 /// Gadget basis used by opening-digit segments in the shared D product.
@@ -118,6 +118,63 @@ pub struct CommittedGroupParams {
 }
 
 impl CommittedGroupParams {
+    /// Algebraic admission for the reviewed full-ring native family. Every
+    /// matrix still passes its installed SIS-table check; no catalog row is
+    /// created by this validation and no outer geometry is imported into inner folds.
+    pub fn validate_full_ring_execution(&self, extension_degree: usize) -> Result<(), AkitaError> {
+        if self.opening_method() != OpeningMethod::FULL_RING_E2
+            || !self.ring_relation_mode.is_exact_coefficient_rows()
+            || self.source_encoding != crate::CommittedSourceEncoding::CanonicalCoefficientTable
+            || self.setup_prefix().is_some()
+            || self.witness_chunk.num_chunks != 1
+            || !self.payload_mode.is_compressed()
+            || self.open().matrix.ring_dimension() != 128
+            || self.open().matrix.sis_modulus_profile()
+                != crate::SisModulusProfileId::Q128OffsetA7F7
+            || self.open().matrix.output_rank() != 1
+            || self.open().digits.log_basis != 5
+            || self.open().digits.num_digits != 26
+        {
+            return Err(AkitaError::InvalidSetup("full-ring coefficient family requires canonical K, complete compressed paths, one chunk and direct setup".into()));
+        }
+        let shell = crate::FULL_RING_FOLD_CHALLENGE;
+        for group in self.groups() {
+            group.opening_method().physical_coefficient_width(
+                extension_degree,
+                group.profile.inner.matrix.ring_dimension(),
+            )?;
+            if group.opening_method() != OpeningMethod::FULL_RING_E2
+                || group.fold_challenge_config() != shell
+                || !matches!(
+                    group.profile.inner.matrix.security_route(),
+                    crate::InnerCommitSecurityRoute::Linf(_)
+                )
+                || group.profile.inner.matrix.sis_modulus_profile()
+                    != crate::SisModulusProfileId::Q128OffsetA7F7
+                || group.profile.outer.matrix.sis_modulus_profile()
+                    != crate::SisModulusProfileId::Q128OffsetA7F7
+                || group.profile.inner.digits.log_basis != 5
+                || group.profile.outer.matrix.ring_dimension() != 128
+                || group.profile.outer.matrix.output_rank() != 1
+                || group.profile.outer_slice_count != crate::CommitmentSliceCount::ONE
+                || group.profile.outer.digits.log_basis != 5
+                || group.profile.outer.digits.num_digits != 26
+                || group.opening.log_basis_open != 5
+                || group.opening.num_digits_open != 26
+                || !group.num_live_blocks().is_power_of_two()
+                || !group.num_positions_per_block().is_power_of_two()
+            {
+                return Err(AkitaError::InvalidSetup(
+                    "full-ring group has mismatched native geometry, paths, or challenge family"
+                        .into(),
+                ));
+            }
+            group.validate()?;
+        }
+        self.open().matrix.validate()?;
+        Ok(())
+    }
+
     /// Build fold parameters with checked, canonically ordered group storage.
     pub fn try_new(
         groups: Vec<GroupOpenPhaseParams>,
@@ -301,11 +358,12 @@ impl CommittedGroupParams {
         &self,
         final_group: crate::PolynomialGroupLayout,
     ) -> Result<OpeningClaimsLayout, AkitaError> {
-        let precommitted = self
+        let mut groups = self
             .preceding_group_iter()
-            .map(|group| group.profile.group)
-            .collect::<Vec<_>>();
-        OpeningClaimsLayout::from_root_groups(&precommitted, final_group)
+            .map(|group| crate::OpeningGroupLayout::new(group.profile.group, group.opening.source_view))
+            .collect::<Result<Vec<_>, _>>()?;
+        groups.push(crate::OpeningGroupLayout::new(final_group, self.own_group().opening.source_view)?);
+        OpeningClaimsLayout::from_opening_groups(groups)
     }
 
     pub(crate) fn validate_opening_batch_geometry(
@@ -323,6 +381,10 @@ impl CommittedGroupParams {
             return Err(AkitaError::InvalidSetup(
                 "opening group count does not match level params".to_string(),
             ));
+        }
+        let final_index = opening_batch.root_final_group_index()?;
+        if opening_batch.group_view(final_index)? != self.own_group().opening.source_view {
+            return Err(AkitaError::InvalidSetup("final group opening view does not match level params".into()));
         }
         // The catalog-validation path may carry a placeholder final-group
         // layout. The stored own profile remains authoritative and is validated
@@ -345,7 +407,8 @@ impl CommittedGroupParams {
                 ));
             }
             let group_layout = opening_batch.group_layout(group_index)?;
-            if *group_layout != group_params.profile.group {
+            if *group_layout != group_params.profile.group
+                || opening_batch.group_view(group_index)? != group_params.opening.source_view {
                 return Err(AkitaError::InvalidSetup(
                     "precommitted group layout does not match level params".to_string(),
                 ));
@@ -567,7 +630,7 @@ impl CommittedGroupParams {
                     OpeningMethod::SubringCoefficientPacking { .. },
                     OpeningMethod::SubringCoefficientPacking { .. }
                 )
-            );
+            ) || (first.is_full_ring_scalar_extension() && first == next);
             if !same_family {
                 return Err(AkitaError::InvalidSetup(
                     "one fold cannot mix opening method families".into(),
@@ -784,7 +847,19 @@ impl CommittedGroupParams {
             self.witness_chunk.num_chunks,
             crate::RelationQuotientPlan::for_field_bits(self, field_bits)?,
         )?;
-        Ok(witness_layout.live_coeff_len())
+        if self.opening_method().is_full_ring_scalar_extension() {
+            witness_layout
+                .live_coeff_len()
+                .max(128)
+                .checked_next_power_of_two()
+                .ok_or_else(|| {
+                    AkitaError::InvalidSetup(
+                        "full-ring identity successor capacity overflow".into(),
+                    )
+                })
+        } else {
+            Ok(witness_layout.live_coeff_len())
+        }
     }
 
     /// Row count for an explicit relation-matrix row layout.
@@ -846,12 +921,44 @@ impl CommittedGroupParams {
         self.relation_matrix_row_count(opening_batch.num_groups())
     }
 
+    /// Complete K-row count for one raw scalar claim per original handle.
+    pub fn exact_coefficient_row_count(
+        &self,
+        opening_batch: &OpeningClaimsLayout,
+    ) -> Result<usize, AkitaError> {
+        if !self.ring_relation_mode.is_exact_coefficient_rows()
+            || self.uniform_opening_method(opening_batch)? != OpeningMethod::FULL_RING_E2
+        {
+            return Err(AkitaError::InvalidSetup(
+                "coefficient row count requires the full-ring E2 method".into(),
+            ));
+        }
+        let geometry = crate::RelationWitnessGeometry::for_level(self, opening_batch, 2)?;
+        geometry
+            .rhs_layout()
+            .coefficient_row_count()?
+            .checked_add(
+                opening_batch
+                    .num_groups()
+                    .checked_mul(2)
+                    .ok_or_else(|| AkitaError::InvalidSetup("scalar row count overflow".into()))?,
+            )
+            .ok_or_else(|| AkitaError::InvalidSetup("coefficient row count overflow".into()))
+    }
+
     /// Boolean variables needed to index the padded row space
     /// (`next_power_of_two(evaluation_trace_row + 1).trailing_zeros()`).
     pub fn relation_row_index_num_vars(
         &self,
         opening_batch: &OpeningClaimsLayout,
     ) -> Result<usize, AkitaError> {
+        if self.ring_relation_mode.is_exact_coefficient_rows() {
+            return self
+                .exact_coefficient_row_count(opening_batch)?
+                .checked_next_power_of_two()
+                .map(|n| n.trailing_zeros() as usize)
+                .ok_or_else(|| AkitaError::InvalidSetup("coefficient row domain overflow".into()));
+        }
         let total_rows = self
             .evaluation_trace_row_index(opening_batch)?
             .checked_add(1)

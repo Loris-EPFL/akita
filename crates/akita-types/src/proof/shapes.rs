@@ -36,6 +36,9 @@ pub fn canonical_extension_opening_reduction_shape(
         ));
     }
     opening_layout.check()?;
+    if opening_layout.views().contains(&akita_params::SourceOpeningView::OriginalRamPlanesV1) {
+        return Err(AkitaError::InvalidSetup("raw RAM views do not support extension opening reduction".into()));
+    }
     let split_bits = extension_degree.trailing_zeros() as usize;
     let num_rounds = opening_layout
         .max_num_vars()

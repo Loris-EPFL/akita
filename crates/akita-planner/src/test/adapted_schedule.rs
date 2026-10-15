@@ -138,10 +138,7 @@ fn adapted_schedule_freezes_main_root_and_rebuilds_grouped_suffix() {
     let pre_group = PolynomialGroupLayout::singleton(14);
     let pre_row = scalar_row(pre_group).expect("scalar precommit row");
     let pre_profile = pre_row.profiles().final_group;
-    let key = ScheduleLookupKey {
-        final_group: main_group,
-        precommitteds: vec![pre_profile],
-    };
+    let key = ScheduleLookupKey::decoded(main_group, vec![pre_profile]);
     let request = grouped_request::<DenseBounded>(main_group, &key.precommitteds);
 
     let adapted = find_adapted_schedule(
@@ -259,10 +256,7 @@ fn adapted_schedule_rejects_non_grouped_or_mismatched_requests() {
     .expect_err("adaptation without precommits must fail");
     assert!(matches!(scalar_error, AkitaError::InvalidInput(_)));
 
-    let mismatch = ScheduleLookupKey {
-        final_group: PolynomialGroupLayout::singleton(15),
-        precommitteds: vec![main_row.profiles().final_group],
-    };
+    let mismatch = ScheduleLookupKey::decoded(PolynomialGroupLayout::singleton(15), vec![main_row.profiles().final_group]);
     let mismatch_request = grouped_request::<Dense>(mismatch.final_group, &mismatch.precommitteds);
     let mismatch_error = find_adapted_schedule(
         &main_row,
@@ -284,10 +278,7 @@ fn adapted_schedule_forces_the_frozen_split_after_grouped_growth() {
         .expect("large scalar precommit row")
         .profiles()
         .final_group;
-    let key = ScheduleLookupKey {
-        final_group: main_group,
-        precommitteds: vec![pre_profile; 4],
-    };
+    let key = ScheduleLookupKey::decoded(main_group, vec![pre_profile; 4]);
     let request = grouped_request::<Dense>(main_group, &key.precommitteds);
 
     let adapted = find_adapted_schedule(
@@ -368,10 +359,7 @@ fn adapted_schedule_rebuilds_a_checked_in_onehot_group_shape() {
     let main_row = catalog
         .resolve_key(&ScheduleLookupKey::single(final_group))
         .expect("standalone main row");
-    let key = ScheduleLookupKey {
-        final_group,
-        precommitteds: reference.profiles().precommitteds.clone(),
-    };
+    let key = ScheduleLookupKey::decoded(final_group, reference.profiles().precommitteds.clone());
     let request = grouped_request::<OneHot>(final_group, &key.precommitteds);
     let policy = policy_of::<OneHot>();
 
@@ -420,10 +408,7 @@ fn adapted_schedule_preserves_recursive_setup_offload_topology() {
         .expect("standalone precommit row")
         .profiles()
         .final_group;
-    let key = ScheduleLookupKey {
-        final_group: main_group,
-        precommitteds: vec![pre_profile],
-    };
+    let key = ScheduleLookupKey::decoded(main_group, vec![pre_profile]);
     let request = grouped_request::<OneHot>(main_group, &key.precommitteds);
     let policy = policy_of::<RecursiveOneHot>();
 
@@ -526,10 +511,7 @@ fn benchmark_adapted_schedule_against_full_plans() {
                     .final_group
             })
             .collect::<Vec<_>>();
-        let key = ScheduleLookupKey {
-            final_group: main_group,
-            precommitteds,
-        };
+        let key = ScheduleLookupKey::decoded(main_group, precommitteds);
         let producers = key
             .precommitteds
             .iter()

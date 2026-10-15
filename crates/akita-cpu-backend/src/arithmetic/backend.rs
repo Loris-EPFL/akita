@@ -87,7 +87,16 @@ where
     fn prepared_expanded_setup<'a>(
         &self,
         prepared: &'a Self::PreparedSetup,
-    ) -> &'a AkitaExpandedSetup<F>;
+    ) -> Result<&'a AkitaExpandedSetup<F>, AkitaError>;
+
+    /// Actual immutable matrix backing this operation (legacy prefix or one
+    /// explicitly selected installed role).
+    fn prepared_matrix<'a>(
+        &self,
+        prepared: &'a Self::PreparedSetup,
+    ) -> Result<&'a akita_params::FlatMatrix<F>, AkitaError> {
+        Ok(self.prepared_expanded_setup(prepared)?.shared_matrix())
+    }
 
     /// Drop backend-designated releasable NTT slots and return the freed bytes.
     /// Slots rebuild on next use. Backends may retain small reusable caches and
@@ -112,7 +121,7 @@ where
         prepared: &Self::PreparedSetup,
         expanded: &AkitaExpandedSetup<F>,
     ) -> Result<(), AkitaError> {
-        let prepared_expanded = self.prepared_expanded_setup(prepared);
+        let prepared_expanded = self.prepared_expanded_setup(prepared)?;
         if prepared_expanded.descriptor() != expanded.descriptor() {
             return Err(AkitaError::InvalidSetup(
                 "prepared compute context was built for a different setup".to_string(),

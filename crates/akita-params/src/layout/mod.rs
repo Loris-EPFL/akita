@@ -28,13 +28,14 @@ pub mod tail_segments;
 
 pub use digit_math::{gadget_row_scalars, isqrt_ceil};
 pub use digit_range::{
-    DigitRangePlan, FlatBooleanDomain, PhysicalL2NormProofWireShape, Stage1StageShape,
+    DigitRangePlan, FlatBooleanDomain, FullRingRangePlan, PhysicalL2NormProofWireShape,
+    Stage1StageShape,
 };
 pub use flat_matrix::{FlatMatrix, RingMatrixView};
 pub use geometry::{
     BlockGeometry, GadgetDigits, InnerRoleParams, OpenRoleParams, OuterRoleParams, RoleParams,
 };
-pub use opening_layout::{OpeningClaimsLayout, PolynomialGroupLayout};
+pub use opening_layout::{OpeningClaimsLayout, OpeningGroupLayout, PolynomialGroupLayout, SourceOpeningView};
 pub use opening_point::{
     basis_weights, basis_weights_prefix, checked_opening_source_index, lagrange_weights,
     monomial_weights, opening_domain_len, reduce_inner_opening_to_ring_element,
@@ -43,7 +44,8 @@ pub use opening_point::{
 pub use params::{
     opening_d_segment_width, shared_d_digit_log_basis, CommittedGroupParams, GroupOpenPhaseParams,
     GroupOpeningPlan, InnerCommitMatrixParams, OpenCommitMatrixParams, OpeningMethod,
-    OuterCommitMatrixParams, PrecommittedGroupAdmissionPolicy, SisModulusProfileId,
+    OuterCommitMatrixParams, PrecommittedGroupAdmissionPolicy, QueryMapVersion, ScalarBasisId,
+    SisModulusProfileId,
 };
 pub use proof_size::{
     extension_opening_reduction_level_bytes, extension_opening_reduction_proof_bytes, field_bytes,

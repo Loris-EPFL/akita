@@ -107,6 +107,7 @@ impl CommittedGroupParams {
         bytes.push(self.ring_relation_mode.tag());
         self.source_encoding.append_descriptor_bytes(bytes);
         self.opening_method().append_descriptor_bytes(bytes);
+        bytes.push(self.own_group().opening.source_view.tag());
         push_u32(bytes, self.inner().digits.log_basis);
         push_u32(bytes, self.outer().digits.log_basis);
         push_u32(bytes, self.open().digits.log_basis);

@@ -10,16 +10,13 @@ pub(super) fn proof_size_budgets<Cfg: CommitmentConfig>(
     schedule: &FoldSchedule,
     final_group: PolynomialGroupLayout,
 ) -> ProofSizeBudgets {
-    let key = akita_params::ScheduleLookupKey {
-        final_group,
-        precommitteds: schedule
-            .root
-            .params
-            .precommitted_groups()
-            .iter()
-            .map(|group| group.profile)
-            .collect(),
-    };
+    let key = akita_params::ScheduleLookupKey::decoded(final_group, schedule
+        .root
+        .params
+        .precommitted_groups()
+        .iter()
+        .map(|group| group.profile)
+        .collect());
     let policy = akita_config::policy_of::<Cfg>();
     let planner_estimate =
         akita_schedules::expanded_schedule_proof_estimate_bytes(&key, schedule, &policy)

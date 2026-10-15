@@ -33,11 +33,7 @@ pub struct CpuCommitmentMaterialHandle<F: Field> {
 }
 
 impl<F: Field> CpuCommitmentMaterialHandle<F> {
-    fn validate_terminal(
-        &self,
-        backend: &crate::opaque::CpuBackend<F, impl Sized>,
-    ) -> Result<(), AkitaError> {
-        backend.validate_binding(&self.binding)?;
+    fn validate_terminal(&self) -> Result<(), AkitaError> {
         let (schedule, _) = self.binding.scope_lease().proof_plan()?;
         if self.binding.fold_level() as usize != schedule.recursive_folds.len() + 1
             || self.commitment_id.is_none()
@@ -152,7 +148,27 @@ where
         &self,
         material: &CpuCommitmentMaterial<F>,
     ) -> Result<crate::commitment::TerminalTFieldsMessage<F>, AkitaError> {
-        material.validate_terminal(self)?;
+        if self.validate_binding(&material.binding).is_err() {
+            material.binding.validate_owner(
+                self.owner_id(),
+                self.owner().setup_digest(),
+                material.binding.fold_level(),
+            )?;
+            material
+                .binding
+                .scope_lease()
+                .validate_owner(self.owner())?;
+            material
+                .binding
+                .scope_lease()
+                .validate_staged_terminal(&material.binding)?;
+            if material.commitment_id != Some(material.binding.operation_id()) {
+                return Err(AkitaError::InvalidInput(
+                    "staged terminal commitment identity".into(),
+                ));
+            }
+        }
+        material.validate_terminal()?;
         crate::commitment::InnerRelationMaterial::terminal_message(&material.inner)
     }
 
@@ -160,7 +176,8 @@ where
         &self,
         material: CpuCommitmentMaterial<F>,
     ) -> Result<RingVec<F>, AkitaError> {
-        material.validate_terminal(self)?;
+        self.validate_binding(&material.binding)?;
+        material.validate_terminal()?;
         crate::commitment::InnerRelationMaterial::into_terminal_row(material.inner)
     }
 }

@@ -53,19 +53,12 @@ fn selective_l2_proof_rejects_transcript_mutations_inner() {
     let prover_group =
         PolynomialGroupClaims::new(point.clone(), openings.clone(), commitments[0].clone())
             .expect("L2 prover group");
-    let proof = scheme
-        .batched_prove(
-            &setup,
-            selected_prover_data::<L2Cfg, _>(
-                &scheme,
-                OpeningClaims::from_groups(vec![prover_group]).expect("L2 prover claims"),
-                vec![hint],
-            )
-            .expect("L2 opening data"),
-            &stack,
-            TRANSCRIPT_LABEL,
-            BasisMode::Lagrange,
-        )
+    let proof = { let native_setup = &setup; let native_opening = selected_prover_data::<L2Cfg, _>(
+        &scheme,
+        OpeningClaims::from_groups(vec![prover_group]).expect("L2 prover claims"),
+        vec![hint],
+    )
+    .expect("L2 opening data"); let native_session = TRANSCRIPT_LABEL; let native_basis = BasisMode::Lagrange; crate::prepare_native_prover_context(native_setup.expanded.descriptor(), scheme.schedules(), &native_opening, native_session, &[], native_basis, 0).and_then(|native_context| scheme.batched_prove(native_setup, native_opening, &stack, native_session, native_context.registry(), native_context.augmentation(), native_basis)) }
         .expect("L2 proof");
 
     let verify = |candidate: &[u8]| {
@@ -79,12 +72,7 @@ fn selective_l2_proof_rejects_transcript_mutations_inner() {
         scheme
             .verifier(verifier_setup.clone())
             .and_then(|verifier| {
-                verifier.batched_verify(
-                    candidate,
-                    TRANSCRIPT_LABEL,
-                    selected_statement::<L2Cfg>(&scheme, claims).expect("L2 verifier statement"),
-                    BasisMode::Lagrange,
-                )
+                { let native_statement = selected_statement::<L2Cfg>(&scheme, claims).expect("L2 verifier statement"); let native_session = TRANSCRIPT_LABEL; let native_basis = BasisMode::Lagrange; crate::prepare_native_proof_context(verifier.setup().expanded().descriptor(), verifier.schedules(), &native_statement, native_session, &[], native_basis, 0).and_then(|native_context| verifier.batched_verify(candidate, native_session, native_context.registry(), native_context.augmentation(), native_statement, native_basis)) }
             })
     };
     verify(&proof).expect("valid L2 proof");

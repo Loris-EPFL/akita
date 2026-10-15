@@ -14,12 +14,12 @@ use std::sync::Arc;
 type F = Prime64Offset59;
 
 struct StreamedResources {
-    setup: akita_types::AkitaSetupDescriptor,
+    setup: akita_types::AkitaSetupIdentity,
     ensures: Arc<AtomicUsize>,
 }
 
 impl CommitmentResourceControl<F> for StreamedResources {
-    fn setup_descriptor(&self) -> &akita_types::AkitaSetupDescriptor {
+    fn setup_descriptor(&self) -> &akita_types::AkitaSetupIdentity {
         &self.setup
     }
 
@@ -75,11 +75,11 @@ fn stage_registration_skips_streamed_slots() {
     let registration = super::super::prepared::PreparedStage::new(
         Arc::new(()),
         CommitmentOperationContext {
-            setup: setup.expanded.descriptor().clone(),
+            setup: setup.expanded.descriptor().clone().into(),
             backend_instance: BackendInstanceId::issue(),
             name: "streamed-inner",
             resources: StageResources::controlled(StreamedResources {
-                setup: setup.expanded.descriptor().clone(),
+                setup: setup.expanded.descriptor().clone().into(),
                 ensures: ensures.clone(),
             }),
         },

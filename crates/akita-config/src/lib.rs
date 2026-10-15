@@ -4,6 +4,13 @@
 //! Schedule rows are supplied through an owned [`TrustedScheduleCatalog`].
 //! Runtime resolution is strict: missing catalog rows reject instead of invoking
 //! planner search.
+//!
+//! Ordinary native openings install [`approved_native_registry_from_trusted_bounds`]
+//! once from an admitted row and approved context bounds, deriving every resource
+//! limit from the fixed grammar. The same complete SHAKE256 v8
+//! grammar covers root reduction, every recursive suffix, and the terminal;
+//! endpoint values and inherited typed history are bound by the channel's
+//! augmented public instance, never by a recorded prover execution.
 
 use akita_challenges::SparseChallengeConfig;
 use akita_error::AkitaError;
@@ -66,6 +73,8 @@ macro_rules! impl_multi_chunk_companion {
     };
 }
 
+pub mod full_ring;
+mod native_registry;
 pub mod proof_optimized;
 pub mod recursive_commitment;
 #[cfg(test)]
@@ -78,11 +87,14 @@ pub use setup_requirements::{validate_setup_capacity_metadata, SetupRequirements
 pub mod test_support;
 mod transcript_binding;
 mod transcript_grinding_plan;
-pub use akita_schedules::ResolvedScheduleRow;
 pub use akita_schedules::RingDimensionScheduleMode;
+pub use akita_schedules::{PlannerOpeningFamily, ResolvedScheduleRow};
 pub use akita_schedules::{
     ValidatedScheduleCatalog, MAX_TRUSTED_SCHEDULE_ARTIFACT_BYTES,
     MAX_TRUSTED_SCHEDULE_ARTIFACT_ROW_BYTES,
+};
+pub use native_registry::{
+    approved_native_registry, approved_native_registry_from_trusted_bounds, NativeRegistryResources,
 };
 pub use proof_optimized::{ensure_prover_schedule_fits_setup, verifier_schedule_fits_setup};
 pub use recursive_commitment::RecursiveCommitmentConfig;
@@ -97,9 +109,17 @@ pub use transcript_grinding_plan::derive_transcript_grinding_plan;
 pub fn policy_of<Cfg: CommitmentConfig>() -> PlannerPolicy {
     let recursive_setup_planning = Cfg::recursive_setup_planning();
     PlannerPolicy {
+        opening_family: Cfg::opening_family(),
         cost_model: akita_schedules::PlannerCostModelId::NoncePayloadAndSetupEnvelopeV2,
-        selective_l2_response_model:
-            akita_schedules::SelectiveL2ResponseModelId::TypedProtocolMomentsV1,
+        selective_l2_response_model: match Cfg::opening_family() {
+            PlannerOpeningFamily::Legacy => {
+                akita_schedules::SelectiveL2ResponseModelId::TypedProtocolMomentsV1
+            }
+            PlannerOpeningFamily::FullRingE2OuterDirect
+            | PlannerOpeningFamily::FullRingE2InnerRecursive => {
+                akita_schedules::SelectiveL2ResponseModelId::Disabled
+            }
+        },
         selection_policy: Cfg::selection_policy(),
         recursive_split_search_policy:
             akita_schedules::RecursiveSplitSearchPolicy::BoundedBalancedExtremesV1,
@@ -243,7 +263,7 @@ impl<Cfg: CommitmentConfig> TrustedScheduleCatalog<Cfg> {
         )? && verifier_schedule_fits_setup(
             setup,
             row.schedule(),
-            &row.profiles().opening_layout()?,
+            &row.opening_layout()?,
         )?)
     }
 
@@ -278,11 +298,7 @@ fn row_fits_setup_capacity(
     max_num_vars: usize,
     max_num_batched_polys: usize,
 ) -> Result<bool, AkitaError> {
-    akita_params::ScheduleLookupKey {
-        final_group: row.profiles().final_group.group,
-        precommitteds: row.profiles().precommitteds.clone(),
-    }
-    .fits_setup_capacity(max_num_vars, max_num_batched_polys)
+    row.lookup_key()?.fits_setup_capacity(max_num_vars, max_num_batched_polys)
 }
 
 impl<Cfg: CommitmentConfig> Deref for TrustedScheduleCatalog<Cfg> {
@@ -317,6 +333,9 @@ pub fn validate_config_policy<Cfg: CommitmentConfig>() -> Result<(), AkitaError>
             "unsupported extension-field degree {actual_degree}"
         )));
     }
+    if Cfg::opening_family().is_full_ring_e2() {
+        akita_types::full_ring::validate_full_ring_fields::<Cfg::Field, Cfg::ExtField>()?;
+    }
     Ok(())
 }
 
@@ -349,9 +368,9 @@ pub fn unit_onehot_source_chunk_size<Cfg: CommitmentConfig>() -> Result<usize, A
 /// - `ExtField` — public opening points, claimed evaluations, proof scalars,
 ///   and Fiat-Shamir challenges.
 ///
-/// The degree-one specialization `Field = ExtField` is the production fp128
-/// path. For fp32/fp64 presets, extension-opening reduction still aligns the
-/// extension opening with base-field committed witnesses internally.
+/// Legacy field presets use the real ring-subfield/tensor implementation.
+/// Both full-ring E2 policies keep canonical base coefficients and use the
+/// explicitly selected scalar-extension carrier; extension degree never selects it.
 pub trait CommitmentConfig: Clone + Send + Sync + 'static {
     /// Base field used by ring commitments, setup matrices, and SIS bounds.
     type Field: CanonicalEncoding + Field;
@@ -361,15 +380,16 @@ pub trait CommitmentConfig: Clone + Send + Sync + 'static {
 
     /// Extension degree `K = [ExtField : Field]`.
     ///
-    /// This is the `K` consumed by [`field_reduction::psi_embed`] and
-    /// [`field_reduction::embed_subfield`] in `akita-types`, and the `K` that
-    /// validates `SubfieldParams<D, K>`. Default body delegates to
-    /// `<ExtField as ExtField<Field>>::DEGREE`; presets should not
-    /// override unless they have a reason to disagree with that.
-    ///
-    /// [`field_reduction::psi_embed`]: akita_types::field_reduction::psi_embed
-    /// [`field_reduction::embed_subfield`]: akita_types::field_reduction::embed_subfield
+    /// This controls scalar coordinate width, not a ring-subfield embedding.
+    /// Legacy methods additionally require their genuine `FpExtEncoding`
+    /// capability. Full-ring methods bind their separate scalar-basis identity.
+    /// Presets must agree with `<ExtField as ExtField<Field>>::DEGREE`.
     const EXT_DEGREE: usize = <Self::ExtField as ExtField<Self::Field>>::DEGREE;
+
+    /// Explicit protocol family, included in the installed catalog policy.
+    fn opening_family() -> akita_schedules::PlannerOpeningFamily {
+        akita_schedules::PlannerOpeningFamily::Legacy
+    }
 
     /// Uniform or bounded-adaptive ring-dimension schedule policy.
     const RING_DIMENSION_SCHEDULE_MODE: RingDimensionScheduleMode;

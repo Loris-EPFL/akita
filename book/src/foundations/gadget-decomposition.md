@@ -305,6 +305,27 @@ range coefficient instead of silently dropping high digits. The `UnitOneHot`
 path separately checks that every value is 0 or 1 and that each chunk has at
 most one value equal to 1.
 
+`OriginalBalancedDigitPlanes` is a separate producer contract for an already
+packed witness. It admits legal noncanonical digit paths without reconstructing
+and redecomposing field coefficients. Its bound must equal the backend field
+width, and its declared base and plane count must match the source's intrinsic
+descriptor. A canonical `BalancedSignedDigit` declaration, even at full field
+width, cannot admit this source: a nonzero path can decode to zero modulo the
+field while still carrying nonzero commitment and fold energy.
+
+For the compact RAM profile, all 26 base-32 planes admit `[-16, 15]`, including
+plane 25. At logical length $L=2^{16}$, the squared source norm is bounded by
+$26\cdot256L=436207616$, not the canonical bound
+$(25\cdot256+16)L=420478976$. The per-plane infinity and ring L1 bounds remain
+16 and 2048. The fixed 16-block fold has all-valid coefficient bound
+$16\cdot56\cdot16=14336$, which still fits three base-32 response digits.
+Its accepted three-digit difference envelope is $32^3-1=32767$, priced at
+$4\cdot56\cdot32767=7339808$ before the existing audited radius 8126340.
+The required RAM geometry remains degree 128, rank 3, and A width $32\cdot26$;
+the six virtual raw-grid holes are not extra committed planes. This is parameter
+arithmetic, not a new concrete security or zero-knowledge claim.
+
+
 ## How digits are stored
 
 The largest digit depends on $\ell$, so Akita chooses a signed integer type

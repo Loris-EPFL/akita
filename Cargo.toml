@@ -25,6 +25,10 @@ members = [
 exclude = ["profile/akita-recursion", "fuzz"]
 resolver = "2"
 
+[workspace.dependencies]
+# Share the D1 transcript compiler with the sibling Jolt checkout.
+jolt-transcript = { path = "../jolt/crates/jolt-transcript", default-features = false, features = ["transcript-d1"] }
+
 [workspace.metadata.cargo-machete]
 ignored = []
 
@@ -104,3 +108,9 @@ print_stderr = "allow"
 inherits = "release"
 debug-assertions = true
 overflow-checks = true
+
+# Use the sibling Jolt checkout for the accumulation prototype's shared
+# source/evaluation field and polynomial types.
+[patch."https://github.com/a16z/jolt"]
+jolt-field = { path = "../jolt/crates/jolt-field" }
+jolt-poly = { path = "../jolt/crates/jolt-poly" }

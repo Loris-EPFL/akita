@@ -3,8 +3,7 @@
 use super::prepared::ErasedCpuNttCache;
 use akita_error::AkitaError;
 use akita_types::{
-    prepare_compression_ntt_cache, prepare_reduced_compression_ntt_cache, AkitaExpandedSetup,
-    PreparedNttCache,
+    prepare_compression_ntt_cache, prepare_reduced_compression_ntt_cache, PreparedNttCache,
 };
 use jolt_field::{CanonicalEncoding, Field};
 use std::any::Any;
@@ -17,6 +16,7 @@ type CompressionSlotCell = OnceLock<Result<Arc<ErasedCpuNttCache>, AkitaError>>;
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 struct CompressionNttCacheKey {
+    matrix: Option<akita_types::ntt_cache::InstalledMatrixIdentity>,
     ring_d: usize,
     input_width: usize,
     domains: CompressionNttDomains,
@@ -38,7 +38,8 @@ pub(super) struct CompressionNttCache {
 impl CompressionNttCache {
     pub(super) fn with_ntt<F, const D: usize, R>(
         &self,
-        expanded: &AkitaExpandedSetup<F>,
+        matrix: &akita_params::FlatMatrix<F>,
+        identity: Option<akita_types::ntt_cache::InstalledMatrixIdentity>,
         input_width: usize,
         domains: CompressionNttDomains,
         f: impl FnOnce(&PreparedNttCache<D>) -> Result<R, AkitaError>,
@@ -47,6 +48,7 @@ impl CompressionNttCache {
         F: Field + CanonicalEncoding,
     {
         let key = CompressionNttCacheKey {
+            matrix: identity,
             ring_d: D,
             input_width,
             domains,
@@ -65,7 +67,7 @@ impl CompressionNttCache {
         let build_result = entry.get_or_init(|| {
             #[cfg(test)]
             self.slot_build_count.fetch_add(1, Ordering::Relaxed);
-            build_slot::<F, D>(expanded, input_width, domains).map(Arc::new)
+            build_slot::<F, D>(matrix, input_width, domains).map(Arc::new)
         });
         let slot = build_result.as_ref().map_err(Clone::clone)?;
         if slot.ring_d != D {
@@ -109,11 +111,11 @@ impl CompressionNttCache {
 }
 
 fn build_slot<F: Field + CanonicalEncoding, const D: usize>(
-    expanded: &AkitaExpandedSetup<F>,
+    matrix: &akita_params::FlatMatrix<F>,
     input_width: usize,
     domains: CompressionNttDomains,
 ) -> Result<ErasedCpuNttCache, AkitaError> {
-    let view = expanded.shared_matrix().ring_view::<D>(1, input_width)?;
+    let view = matrix.ring_view::<D>(1, input_width)?;
     let cache = Arc::new(match domains {
         CompressionNttDomains::Negacyclic => prepare_reduced_compression_ntt_cache(view)?,
         CompressionNttDomains::Both => prepare_compression_ntt_cache(view)?,
@@ -202,7 +204,7 @@ mod tests {
     #[test]
     fn cache_cannot_alias_full_envelope_both_transform_cache() {
         let prepared = empty_prepared();
-        let envelope_width = prepared.expanded.shared_matrix().num_field_elements() / D;
+        let envelope_width = prepared.matrix().num_field_elements() / D;
         let compression_digits = vec![[0i8; D]; envelope_width];
         CpuBackend::<F, F>::for_arithmetic_tests()
             .compression_rows_products::<D>(&prepared, &[compression_digits.as_slice()])
@@ -210,6 +212,7 @@ mod tests {
         assert_eq!(prepared.shared_ntt_cache_bytes(), 0);
 
         let envelope_key = NttCacheKey {
+            matrix: None,
             ring_d: D,
             num_ring_elements: envelope_width,
             domain: NttTransformDomain::Cyclic,
@@ -263,6 +266,7 @@ mod tests {
         let prepared = empty_prepared();
         let digits = vec![[0i8; D]; 3];
         let shared_key = NttCacheKey {
+            matrix: None,
             ring_d: D,
             num_ring_elements: digits.len(),
             domain: NttTransformDomain::Cyclic,

@@ -30,6 +30,43 @@ where
         .mat_vec_i16(TERMINAL_I16_LOG_BASIS, num_rows, rhs)
 }
 
+/// Apply the same exact prepared A matrix to a wide, already range-checked
+/// signed response. Base-2^15 limbs stay inside the existing i16 CRT envelope.
+pub(super) fn wide_centered_rows<F, const D: usize>(
+    terminal_ntt: &akita_types::PreparedNttCache<D>,
+    num_rows: usize,
+    rhs: &[[i128; D]],
+) -> Result<Vec<CyclotomicRing<F, D>>, AkitaError>
+where
+    F: Field + CanonicalEncoding + akita_serialization::AkitaSerialize,
+{
+    let max = rhs
+        .iter()
+        .flatten()
+        .map(|v| v.unsigned_abs())
+        .max()
+        .unwrap_or(0);
+    let limbs = (128 - max.leading_zeros() as usize).div_ceil(15);
+    let mut result = vec![CyclotomicRing::zero(); num_rows];
+    let mut digit_rows = vec![[0i16; D]; rhs.len()];
+    let mut scale = F::one();
+    for limb in 0..limbs {
+        for (digits, values) in digit_rows.iter_mut().zip(rhs) {
+            for (digit, value) in digits.iter_mut().zip(values) {
+                let magnitude = ((value.unsigned_abs() >> (15 * limb)) & 0x7fff) as i16;
+                *digit = if *value < 0 { -magnitude } else { magnitude };
+            }
+        }
+        let product =
+            terminal_ntt.mat_vec_i16::<F>(TERMINAL_I16_LOG_BASIS, num_rows, &digit_rows)?;
+        for (out, value) in result.iter_mut().zip(product) {
+            *out += value.scale(&scale);
+        }
+        scale *= F::from_u64(1 << 15);
+    }
+    Ok(result)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -156,6 +193,40 @@ mod tests {
                 width,
             }],
         )
+    }
+
+    #[test]
+    fn wide_terminal_product_matches_native_ring_arithmetic() {
+        let matrix = matrix();
+        let setup = verifier_setup(&matrix);
+        let cache = terminal_cache(&setup, 10, 5).unwrap();
+        let integers: Vec<[i128; D]> = (0..5)
+            .map(|column| {
+                core::array::from_fn(|j| match (column + j) % 4 {
+                    0 => (1i128 << 90) + 32768,
+                    1 => -((1i128 << 80) + 1),
+                    2 => 89600,
+                    _ => 0,
+                })
+            })
+            .collect();
+        let rings: Vec<CyclotomicRing<F, D>> = integers
+            .iter()
+            .map(|values| {
+                CyclotomicRing::from_coefficients(values.map(|value| {
+                    let magnitude = F::from_u128(value.unsigned_abs());
+                    if value < 0 {
+                        -magnitude
+                    } else {
+                        magnitude
+                    }
+                }))
+            })
+            .collect();
+        assert_eq!(
+            wide_centered_rows::<F, D>(cache.get::<D>().unwrap(), 2, &integers).unwrap(),
+            expected(&matrix, &rings)
+        );
     }
 
     #[test]

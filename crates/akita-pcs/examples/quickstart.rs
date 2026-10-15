@@ -50,13 +50,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     let selection = prover_data.selection();
 
-    let proof = scheme.batched_prove(
-        &setup,
-        prover_data,
-        &backend,
-        TRANSCRIPT_DOMAIN,
-        BasisMode::Lagrange,
-    )?;
+    let proof = { let native_setup = &setup; let native_opening = prover_data; let native_session = TRANSCRIPT_DOMAIN; let native_basis = BasisMode::Lagrange; akita_pcs::prepare_native_prover_context(native_setup.expanded.descriptor(), scheme.schedules(), &native_opening, native_session, &[], native_basis, 0).and_then(|native_context| scheme.batched_prove(native_setup, native_opening, &backend, native_session, native_context.registry(), native_context.augmentation(), native_basis)) }?;
 
     let verifier = scheme.verifier(scheme.setup_verifier(&setup)?)?;
     let verifier_claims = OpeningClaims::from_groups(vec![PolynomialGroupClaims::new(
@@ -65,7 +59,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         &commit_output.committed_group,
     )?])?;
     let statement = GroupBatchStatement::new(selection, verifier_claims)?;
-    verifier.batched_verify(&proof, TRANSCRIPT_DOMAIN, statement, BasisMode::Lagrange)?;
+    { let native_statement = statement; let native_session = TRANSCRIPT_DOMAIN; let native_basis = BasisMode::Lagrange; akita_pcs::prepare_native_proof_context(verifier.setup().expanded().descriptor(), verifier.schedules(), &native_statement, native_session, &[], native_basis, 0).and_then(|native_context| verifier.batched_verify(&proof, native_session, native_context.registry(), native_context.augmentation(), native_statement, native_basis)) }?;
 
     println!("Akita proof verified");
     Ok(())

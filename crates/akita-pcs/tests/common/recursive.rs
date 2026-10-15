@@ -59,10 +59,7 @@ pub(crate) fn recursive_multi_group_round_trip_on<BaseCfg>(
         .expect("independent profile")
         .profiles()
         .final_group;
-    let schedule_key = ScheduleLookupKey {
-        final_group: PolynomialGroupLayout::new(FINAL_NV, FINAL_GROUP_SIZE),
-        precommitteds: vec![pre_frozen, pre_frozen],
-    };
+    let schedule_key = ScheduleLookupKey::decoded(PolynomialGroupLayout::new(FINAL_NV, FINAL_GROUP_SIZE), vec![pre_frozen, pre_frozen]);
     let opening_layout = schedule_key.opening_layout().expect("opening layout");
     let schedule = recursive_scheme
         .schedules()
@@ -170,14 +167,7 @@ pub(crate) fn recursive_multi_group_round_trip_on<BaseCfg>(
     );
     let selection = prover_claims.selection();
 
-    let proof = recursive_scheme
-        .batched_prove(
-            setup,
-            prover_claims,
-            stack,
-            transcript_domain,
-            BasisMode::Lagrange,
-        )
+    let proof = { let native_setup = setup; let native_opening = prover_claims; let native_session = transcript_domain; let native_basis = BasisMode::Lagrange; akita_pcs::prepare_native_prover_context(native_setup.expanded.descriptor(), recursive_scheme.schedules(), &native_opening, native_session, &[], native_basis, 0).and_then(|native_context| recursive_scheme.batched_prove(native_setup, native_opening, stack, native_session, native_context.registry(), native_context.augmentation(), native_basis)) }
         .expect("generated-profile recursive proof");
 
     let verifier_setup = recursive_scheme
@@ -206,12 +196,7 @@ pub(crate) fn recursive_multi_group_round_trip_on<BaseCfg>(
     recursive_scheme
         .verifier(verifier_setup.clone())
         .and_then(|verifier| {
-            verifier.batched_verify(
-                &proof,
-                transcript_domain,
-                verify_claims(final_openings.clone()),
-                BasisMode::Lagrange,
-            )
+            { let native_statement = verify_claims(final_openings.clone()); let native_session = transcript_domain; let native_basis = BasisMode::Lagrange; akita_pcs::prepare_native_proof_context(verifier.setup().expanded().descriptor(), verifier.schedules(), &native_statement, native_session, &[], native_basis, 0).and_then(|native_context| verifier.batched_verify(&proof, native_session, native_context.registry(), native_context.augmentation(), native_statement, native_basis)) }
         })
         .expect("generated-profile recursive verify");
 
@@ -223,12 +208,7 @@ pub(crate) fn recursive_multi_group_round_trip_on<BaseCfg>(
         let alternate_result = recursive_scheme
             .verifier(alternate_verifier_setup.clone())
             .and_then(|verifier| {
-                verifier.batched_verify(
-                    &proof,
-                    transcript_domain,
-                    verify_claims(final_openings.clone()),
-                    BasisMode::Lagrange,
-                )
+                { let native_statement = verify_claims(final_openings.clone()); let native_session = transcript_domain; let native_basis = BasisMode::Lagrange; akita_pcs::prepare_native_proof_context(verifier.setup().expanded().descriptor(), verifier.schedules(), &native_statement, native_session, &[], native_basis, 0).and_then(|native_context| verifier.batched_verify(&proof, native_session, native_context.registry(), native_context.augmentation(), native_statement, native_basis)) }
             });
         assert!(
             alternate_result.is_err(),
@@ -240,12 +220,7 @@ pub(crate) fn recursive_multi_group_round_trip_on<BaseCfg>(
         let result = recursive_scheme
             .verifier(verifier_setup.clone())
             .and_then(|verifier| {
-                verifier.batched_verify(
-                    &tampered_proof,
-                    transcript_domain,
-                    verify_claims(final_openings.clone()),
-                    BasisMode::Lagrange,
-                )
+                { let native_statement = verify_claims(final_openings.clone()); let native_session = transcript_domain; let native_basis = BasisMode::Lagrange; akita_pcs::prepare_native_proof_context(verifier.setup().expanded().descriptor(), verifier.schedules(), &native_statement, native_session, &[], native_basis, 0).and_then(|native_context| verifier.batched_verify(&tampered_proof, native_session, native_context.registry(), native_context.augmentation(), native_statement, native_basis)) }
             });
         assert!(
             result.is_err(),
@@ -279,12 +254,7 @@ pub(crate) fn recursive_multi_group_round_trip_on<BaseCfg>(
     let tampered_result = recursive_scheme
         .verifier(verifier_setup.clone())
         .and_then(|verifier| {
-            verifier.batched_verify(
-                &proof,
-                transcript_domain,
-                verify_claims(tampered),
-                BasisMode::Lagrange,
-            )
+            { let native_statement = verify_claims(tampered); let native_session = transcript_domain; let native_basis = BasisMode::Lagrange; akita_pcs::prepare_native_proof_context(verifier.setup().expanded().descriptor(), verifier.schedules(), &native_statement, native_session, &[], native_basis, 0).and_then(|native_context| verifier.batched_verify(&proof, native_session, native_context.registry(), native_context.augmentation(), native_statement, native_basis)) }
         });
     assert!(
         tampered_result.is_err(),

@@ -52,7 +52,7 @@ impl<F: Field + CanonicalEncoding + 'static, E> CpuBackend<F, E> {
         source: RingVec<F>,
     ) -> Result<PortableCompressionOutput<F>, AkitaError> {
         let prepared = self.prepared()?;
-        let expanded = prepared.expanded();
+        let expanded = prepared.expanded()?;
         if plan.max_setup_field_elements()? > expanded.descriptor.num_field_elements {
             return Err(AkitaError::InvalidSetup(
                 "relation compression exceeds setup capacity".into(),
@@ -80,6 +80,9 @@ impl<F: Field + CanonicalEncoding + 'static, E> CpuBackend<F, E> {
             }
             CompressionRelationOutput::ReducedEvaluation => {
                 PortableCompressionState::reduced_evaluation(output.witness)?
+            }
+            CompressionRelationOutput::ExactCoefficientRows => {
+                PortableCompressionState::exact_coefficient_rows(output.witness)?
             }
         };
         state.validate(plan, relation_mode)?;
@@ -159,7 +162,8 @@ mod tests {
                     CompressionRelationOutput::QuotientLift { quotients } => {
                         assert_eq!(actual.state().quotients(), Some(quotients.as_slice()))
                     }
-                    CompressionRelationOutput::ReducedEvaluation => {
+                    CompressionRelationOutput::ReducedEvaluation
+                    | CompressionRelationOutput::ExactCoefficientRows => {
                         assert!(actual.state().quotients().is_none())
                     }
                 }

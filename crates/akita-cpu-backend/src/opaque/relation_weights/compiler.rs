@@ -86,6 +86,11 @@ where
                     ));
                 }
             }
+            RingRelationMode::ExactCoefficientRows => {
+                return Err(AkitaError::InvalidInput(
+                    "exact coefficient rows use the bound full-ring relation compiler".into(),
+                ))
+            }
         }
         let physical_field_len = opening_source_len
             .checked_mul(opening_ring_dim)

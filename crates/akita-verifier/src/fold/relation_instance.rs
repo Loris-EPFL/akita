@@ -108,10 +108,16 @@ where
             &commitment_rows,
         )?
     };
+    if group_challenges.len() != prepared.opening_shape.num_groups()
+        || prefix.prepared_points.len() != prepared.opening_shape.num_groups()
+    {
+        return Err(AkitaError::InvalidProof);
+    }
     let group_openings = group_challenges
         .into_iter()
         .zip(&prefix.prepared_points)
-        .map(|(challenges, point)| match (challenges, point) {
+        .enumerate()
+        .map(|(group_index, (challenges, point))| match (challenges, point) {
             (
                 OpeningFamily::EvaluationTrace(challenges),
                 PreparedFoldOpeningPoint::EvaluationTrace(point),
@@ -122,7 +128,10 @@ where
             (
                 OpeningFamily::SubringCoefficientPacking(challenges),
                 PreparedFoldOpeningPoint::SubringCoefficientPacking(point),
-            ) if point.geometry() == challenges.geometry() => {
+            ) if point.geometry() == challenges.geometry()
+                && point.source_view() == prepared.opening_shape.group_view(group_index)?
+                && point.point_num_vars()
+                    == prepared.opening_shape.group_point_num_vars(group_index)? => {
                 Ok(RingRelationGroupOpening::coefficient_packing(challenges))
             }
             _ => Err(AkitaError::InvalidProof),

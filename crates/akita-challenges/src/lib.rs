@@ -7,18 +7,20 @@
 //! - [`SparseChallengeConfig`] — fixed-weight sparse family `(count_pm1, count_pm2)`
 //!   exposing policy questions like `l1_norm()` / `infinity_norm()` / `validate()`
 //!   to `akita-config`, `akita-types`, and `akita-planner`.
-//! - [`FoldDraw`] and its Spongefish adapters — fold-challenge drawing
-//!   over live or preview state.
+//! - [`ShellLevelDescriptor`] — frozen whole-level finite raw family and owners.
+//! - [`FoldDraw`] — one atomic preview/live/verifier v8 draw over that family.
 //! - [`Challenges`] — sampled folding challenges in claim-major block order.
 //!
-//! Sampling uses the signed-sparse path in a private `sampler` submodule. The
-//! SHAKE256-backed XOF cursor is crate-internal and not part of the public API.
+//! Sampling reuses pure signed-sparse arithmetic and the certified integer
+//! predicate. The literal-key transcript provides the bounded finite answer.
 
 mod challenge;
 mod challenges;
 mod config;
 mod fold_draw;
 mod sampler;
+mod shell;
+mod shell_decode;
 
 pub use challenge::{
     SparseChallenge, SparseChallengeCoefficients, SparseChallengePositions, INLINE_SPARSE_WEIGHT,
@@ -32,6 +34,11 @@ pub use config::{
     MIN_FOLD_CHALLENGE_ENTROPY_BITS, PRODUCTION_FOLD_CHALLENGE_RING_DIMS,
 };
 pub use fold_draw::{
-    fold_challenge_sample_label, FoldChallengeDrawDomain, FoldDraw, PreviewFoldDraw,
-    ProverFoldDraw, VerifierFoldDraw,
+    FoldDraw, PreviewFoldDraw, ProverFoldDraw, VerifierFoldDraw,
 };
+pub use shell::{
+    CanonicalShellGroup, CanonicalShellLevel, FoldChallengeDrawDomain,
+    ShellCoordinateInputs, ShellGroupDescriptor, ShellLevelDescriptor, ShellSupport,
+    SHELL_FILTER_CAP, SHELL_MASK_CAP,
+};
+pub use shell_decode::decode_shell_level_from_bytes;

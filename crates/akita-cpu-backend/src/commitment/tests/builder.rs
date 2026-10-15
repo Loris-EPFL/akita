@@ -83,7 +83,7 @@ impl OuterCommitOperation<F> for RecordingCpuOuter<'_> {
 }
 
 struct RecordingResources {
-    setup: akita_types::AkitaSetupDescriptor,
+    setup: akita_types::AkitaSetupIdentity,
     identity: Arc<AtomicUsize>,
     ensures: Arc<AtomicUsize>,
     releases: Arc<AtomicUsize>,
@@ -91,7 +91,7 @@ struct RecordingResources {
 }
 
 impl CommitmentResourceControl<F> for RecordingResources {
-    fn setup_descriptor(&self) -> &akita_types::AkitaSetupDescriptor {
+    fn setup_descriptor(&self) -> &akita_types::AkitaSetupIdentity {
         &self.setup
     }
 
@@ -155,7 +155,7 @@ fn distinct_resource_owners_are_prewarmed_and_released_independently() {
     let compression_releases = Arc::new(AtomicUsize::new(0));
     let resources = |ensures: Arc<AtomicUsize>, releases: Arc<AtomicUsize>, released_bytes| {
         RecordingResources {
-            setup: setup.expanded.descriptor().clone(),
+            setup: setup.expanded.descriptor().clone().into(),
             identity: Arc::new(AtomicUsize::new(0)),
             ensures,
             releases,

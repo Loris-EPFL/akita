@@ -33,14 +33,28 @@ fn prepare_group<E: Field>(
         d_a,
         challenge_subring_dimension,
     )?;
-    PreparedSubringCoefficientPackingPoint::new(
-        geometry,
-        basis,
-        group_params.num_live_ring_elements_per_claim(),
-        group_params.num_positions_per_block(),
-        source_num_vars,
-        point,
-    )
+    match group_params.source_view() {
+        akita_params::SourceOpeningView::Decoded => {
+            PreparedSubringCoefficientPackingPoint::new(
+                geometry,
+                basis,
+                group_params.num_live_ring_elements_per_claim(),
+                group_params.num_positions_per_block(),
+                source_num_vars,
+                point,
+            )
+        }
+        akita_params::SourceOpeningView::OriginalRamPlanesV1 => {
+            PreparedSubringCoefficientPackingPoint::new_original_ram_planes(
+                geometry,
+                basis,
+                group_params.num_live_ring_elements_per_claim(),
+                group_params.num_positions_per_block(),
+                source_num_vars,
+                point,
+            )
+        }
+    }
 }
 
 fn prepare_prefix_points<F: Field, E: ExtField<F>, C>(
@@ -57,6 +71,12 @@ fn prepare_prefix_points<F: Field, E: ExtField<F>, C>(
     for group_index in 0..opening_batch.num_groups() {
         let layout = opening_batch.group_layout(group_index)?;
         let group_params = level_params.group_params_geometry(opening_batch, group_index)?;
+        if group_params.source_view() != opening_batch.group_view(group_index)?
+            || claims.groups().get(group_index).ok_or(AkitaError::InvalidProof)?.source_view()
+                != group_params.source_view()
+        {
+            return Err(AkitaError::InvalidProof);
+        }
         prepared_points.push(PreparedFoldOpeningPoint::SubringCoefficientPacking(
             prepare_group::<E>(
                 claims.group_point(group_index)?,
@@ -105,6 +125,9 @@ where
     F: Field + CanonicalEncoding + AkitaSerialize,
     E: FpExtEncoding<F> + ExtField<F> + Ring + AkitaSerialize,
 {
+    if opening_batch.views().iter().any(|view| *view != akita_params::SourceOpeningView::Decoded) {
+        return Err(AkitaError::InvalidProof);
+    }
     let prepared_points =
         prepare_prefix_points::<F, E, _>(claims, openings, opening_batch, basis, lp)?;
     for group_index in 0..opening_batch.num_groups() {

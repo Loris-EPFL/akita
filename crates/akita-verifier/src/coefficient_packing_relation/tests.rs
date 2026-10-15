@@ -17,6 +17,45 @@ use std::sync::Arc;
 
 type F = Prime64Offset59;
 type E = Ext2<F>;
+#[test]
+fn original_ram_compact_digits_match_eq_without_normalization() {
+    type K = Prime128OffsetA7F7;
+    // Exercise d_0 = 0, zero high segment multipliers, and non-Boolean points.
+    let points = [
+        [1, 2, 3, 4, 5],
+        [0, 0, 0, 0, 0],
+        [1, 1, 1, 0, 1],
+        [2, 3, 5, 7, 11],
+    ];
+    let stride = 3 * 128;
+    for values in points {
+        let point = values.map(K::from_u64);
+        let (axes, high) = super::compact::original_ram_digit_axes(&point, stride).unwrap();
+        let mut seen = 0;
+        for ((segment, axis), multiplier) in [0..16, 16..24, 24..26]
+            .into_iter()
+            .zip(axes)
+            .zip(high)
+        {
+            assert_eq!(axis.left_stride, 0);
+            assert_eq!(axis.right_stride, stride);
+            assert_eq!(axis.len, segment.len());
+            for digit in segment.clone() {
+                let expected = point.iter().enumerate().fold(K::one(), |acc, (bit, &u)| {
+                    acc * if digit & (1 << bit) == 0 { K::one() - u } else { u }
+                });
+                assert_eq!(
+                    multiplier * axis.coordinate_weight(digit - segment.start).unwrap(),
+                    expected,
+                    "physical digit {digit}",
+                );
+                seen += 1;
+            }
+        }
+        assert_eq!(seen, 26);
+    }
+}
+
 
 /// The prover's expanded relation events and Stage 2 terms, materialized over
 /// the padded flat domain. These are the dense oracles for the compact factors.
@@ -122,7 +161,7 @@ pub(crate) fn materialize_stage2<E: Field>(
             .iter()
             .enumerate()
         {
-            for (witness_digit, &witness_weight) in semantics.witness_gadget().iter().enumerate() {
+            for (witness_digit, &witness_weight) in semantics.source_opening_weights().iter().enumerate() {
                 for (fold_digit, &fold_weight) in semantics.fold_gadget().iter().enumerate() {
                     let physical_start = unit
                         .z_coefficient_index(

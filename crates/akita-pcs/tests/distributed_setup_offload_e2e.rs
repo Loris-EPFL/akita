@@ -41,10 +41,7 @@ fn w8r2_profiling_key(
         .expect("independent row")
         .profiles()
         .final_group;
-    ScheduleLookupKey {
-        final_group: PolynomialGroupLayout::new(32, 2),
-        precommitteds: vec![precommitted, precommitted],
-    }
+    ScheduleLookupKey::decoded(PolynomialGroupLayout::new(32, 2), vec![precommitted, precommitted])
 }
 
 #[test]

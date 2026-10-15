@@ -393,6 +393,10 @@ fn audit_terminal(
     let sparse = &params.fold_challenge_config;
     let response_shape = &params.response_shape;
     audit_inner_matrix(label, &params.inner.matrix, policy)?;
+    if params.opening_method.is_full_ring_scalar_extension() {
+        params.validate_opening_execution(policy.claim_ext_degree)?;
+        return Ok(());
+    }
     sparse
         .validate_for_ring_dim(params.d_a())
         .map_err(|message| invalid(label, message))?;
@@ -527,7 +531,50 @@ pub(crate) fn audit_resolved_schedule(
     validate_policy(policy)?;
     profiles.validate(policy.decomposition.field_bits())?;
     schedule.validate_structure()?;
+    let full_ring = policy.opening_family.is_full_ring_e2();
+    if full_ring
+        != schedule
+            .root
+            .params
+            .opening_method()
+            .is_full_ring_scalar_extension()
+    {
+        return Err(invalid(
+            "schedule",
+            "opening family disagrees with installed policy",
+        ));
+    }
+    match policy.opening_family {
+        crate::PlannerOpeningFamily::FullRingE2OuterDirect
+            if !schedule.recursive_folds.is_empty() =>
+        {
+            return Err(invalid(
+                "schedule",
+                "outer family requires a direct terminal",
+            ))
+        }
+        crate::PlannerOpeningFamily::FullRingE2InnerRecursive => audit_compact_inner(schedule)?,
+        _ => {}
+    }
     audit_digit_ranges(schedule, policy.decomposition.field_bits())?;
+    for group in schedule.root.params.groups() {
+        group.opening.validate_source_view(&group.profile, policy.claim_ext_degree)?;
+        if group.opening.source_view() == akita_params::SourceOpeningView::OriginalRamPlanesV1
+            && (policy.chal_ext_degree != 1
+                || schedule.root.params.witness_chunk != akita_params::ChunkedWitnessCfg::default()
+                || schedule.root.params.source_encoding
+                    != akita_params::CommittedSourceEncoding::CanonicalCoefficientTable)
+        {
+            return Err(invalid("root view", "raw RAM requires K/K single-chunk canonical source encoding"));
+        }
+    }
+    for fold in &schedule.recursive_folds {
+        if fold.params.groups().iter().any(|group| {
+            group.opening.source_view() != akita_params::SourceOpeningView::Decoded
+        }) {
+            return Err(invalid("recursive view", "original RAM view is root-only, including setup groups"));
+        }
+    }
 
     let final_params = &schedule.root.params;
     // Four of the five comparisons that used to live here compared a field with
@@ -590,6 +637,111 @@ pub(crate) fn audit_resolved_schedule(
     })
 }
 
+/// The compact inner profile is a finite, separately bound route, not an
+/// unrestricted recursive version of the ordinary outer planner.
+fn audit_compact_inner(schedule: &FoldSchedule) -> Result<(), AkitaError> {
+    let fail = || {
+        invalid(
+            "compact inner",
+            "source, norm or three-shrink topology disagrees with profile",
+        )
+    };
+    let check_group = |group: &GroupOpenPhaseParams, p, vars, b, m, digits, rank, response| {
+        let profile = &group.profile;
+        profile.group == akita_params::PolynomialGroupLayout::new(vars, p)
+            && profile.blocks == akita_params::BlockGeometry::new(b * m, m, b)
+            && profile.inner.digits == GadgetDigits::new(5, digits)
+            && profile.inner.matrix.output_rank() == rank
+            && profile.inner.matrix.input_width() == m * digits
+            && profile.outer.matrix.input_width() == p * b * rank * 26
+            && group.opening.num_digits_fold == response
+            && group.setup_natural_len.is_none()
+    };
+    let root = &schedule.root.params;
+    root.validate_full_ring_execution(2)?;
+    if schedule.recursive_folds.len() != 3
+        || schedule.root.output_witness_len != 1 << 22
+        || !check_group(root.own_group(), 56, 16, 1, 512, 1, 3, 3)
+        || root.precommitted_groups().len() != 3
+        || root.open().matrix.input_width() != 6240
+    {
+        return Err(fail());
+    }
+    // This finite route binds RAM to original full-alphabet planes, never
+    // canonical field digits with a discounted final plane. Its matrix route
+    // is Linf; aggregate plane energy is consumed by source-moment pricing.
+    let ram_contract = akita_params::sis::CommittedSourceContract::try_new(
+        akita_params::sis::CommittedSourceClass::OriginalBalancedDigitPlanes,
+        DecompositionParams {
+            log_basis: 5,
+            log_commit_bound: 128,
+            log_open_bound: Some(128),
+        },
+    )?;
+    let ram_norms = ram_contract.source_norms(5, 26, 128, 1 << 16)?;
+    let ram_response_depth = akita_params::full_ring_response_depth(
+        16 * akita_params::FULL_RING_FOLD_CHALLENGE.l1_norm() as u128
+            * ram_norms.fold_witness.infinity_norm(),
+    )?;
+    let mut receiver_count = 0;
+    let mut ram = None;
+    let mut ram_count = 0;
+    for group in root.precommitted_groups() {
+        if check_group(group, 1, 22, 32, 1024, 1, 4, 4) {
+            receiver_count += 1;
+        } else if check_group(group, 1, 16, 16, 32, 26, 3, ram_response_depth) {
+            if ram.is_some_and(|profile| profile != group.profile) {
+                return Err(fail());
+            }
+            ram = Some(group.profile);
+            ram_count += 1;
+        } else {
+            return Err(fail());
+        }
+    }
+    if receiver_count != 1 || ram_count != 2 {
+        return Err(fail());
+    }
+    for (step, (vars, b, m, rank, response, d_width)) in schedule.recursive_folds.iter().zip([
+        (22, 32, 1024, 4, 4, 1664),
+        (21, 16, 1024, 3, 3, 832),
+        (20, 16, 512, 3, 3, 832),
+    ]) {
+        step.params.validate_full_ring_execution(2)?;
+        if step.input_witness_len != 1 << vars
+            || step.output_witness_len != 1 << (vars - 1)
+            || !step.params.precommitted_groups().is_empty()
+            || !check_group(step.params.own_group(), 1, vars, b, m, 1, rank, response)
+            || step.params.open().matrix.input_width() != d_width
+        {
+            return Err(fail());
+        }
+    }
+    // The receiver installed by the update is the same commitment map consumed
+    // by final normalization and the first shrinking fold.
+    let receiver = root
+        .precommitted_groups()
+        .iter()
+        .find(|group| group.profile.group.num_vars() == 22)
+        .ok_or_else(fail)?;
+    if receiver.profile != schedule.recursive_folds[0].params.own_group().profile {
+        return Err(fail());
+    }
+    let terminal = &schedule.terminal;
+    terminal.validate_opening_execution(2)?;
+    if terminal.input_witness_len != 1 << 19
+        || terminal.blocks != akita_params::BlockGeometry::new(4096, 512, 8)
+        || terminal.inner.digits != GadgetDigits::new(5, 1)
+        || terminal.inner.matrix.output_rank() != 3
+        || terminal.inner.matrix.input_width() != 512
+        || terminal.response_codec != akita_params::TerminalResponseCodec::full_ring(8)?
+        || terminal.fold != GadgetDigits::new(5, 3)
+    {
+        return Err(fail());
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -604,6 +756,7 @@ mod tests {
 
     fn policy() -> PlannerPolicy {
         PlannerPolicy {
+            opening_family: crate::PlannerOpeningFamily::Legacy,
             cost_model: PlannerCostModelId::NoncePayloadAndSetupEnvelopeV2,
             selective_l2_response_model: crate::SelectiveL2ResponseModelId::Disabled,
             selection_policy: SelectionPolicyId::MinEstimatedExactProofAndWorkV5,
@@ -657,6 +810,9 @@ mod tests {
         .expect("candidate construction")
         .expect("exact terminal calibration");
         let mut terminal = TerminalFoldParams {
+            opening_method: akita_params::OpeningMethod::EvaluationTrace,
+            source_encoding: akita_params::CommittedSourceEncoding::CanonicalCoefficientTable,
+            response_codec: akita_params::TerminalResponseCodec::GolombRice,
             blocks: akita_params::BlockGeometry::new(16, 16, 1),
             inner: InnerRoleParams::new(GadgetDigits::new(4, 1), expected),
             fold: GadgetDigits::new(4, 3),

@@ -10,6 +10,20 @@ use crate::sis::{
 };
 use crate::{CommitmentRingDims, DecompositionParams};
 
+/// Scalar extension basis bound by the full-ring opening descriptor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub enum ScalarBasisId {
+    /// K[U]/(U² - 5), in coefficient order (1, U).
+    E2Nonresidue5,
+}
+
+/// Source-query map, independent of the source's commitment gadget decoder.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub enum QueryMapVersion {
+    /// Raw coefficient equality weights in low-to-high (j, digit, x, block, p) order.
+    RawCoefficientV1,
+}
+
 /// Schedule-selected procedure for opening one committed group.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum OpeningMethod {
@@ -20,9 +34,27 @@ pub enum OpeningMethod {
         /// Dimension of the sparse fold-challenge subring.
         challenge_subring_dimension: usize,
     },
+    /// Scalar extension of the entire native ring; never a ring-subfield embedding.
+    FullRingScalarExtension {
+        extension_degree: usize,
+        scalar_basis_id: ScalarBasisId,
+        query_map_version: QueryMapVersion,
+    },
 }
 
 impl OpeningMethod {
+    /// Reviewed full-ring carrier. Sources and lattice matrices remain over K.
+    pub const FULL_RING_E2: Self = Self::FullRingScalarExtension {
+        extension_degree: 2,
+        scalar_basis_id: ScalarBasisId::E2Nonresidue5,
+        query_map_version: QueryMapVersion::RawCoefficientV1,
+    };
+
+    #[must_use]
+    pub const fn is_full_ring_scalar_extension(self) -> bool {
+        matches!(self, Self::FullRingScalarExtension { .. })
+    }
+
     /// Whether this method uses extension-opening reduction for the field tower.
     #[must_use]
     pub const fn requires_extension_opening_reduction(self, extension_degree: usize) -> bool {
@@ -38,6 +70,16 @@ impl OpeningMethod {
                 bytes.push(1);
                 push_usize(bytes, challenge_subring_dimension);
             }
+            Self::FullRingScalarExtension {
+                extension_degree,
+                scalar_basis_id: ScalarBasisId::E2Nonresidue5,
+                query_map_version: QueryMapVersion::RawCoefficientV1,
+            } => {
+                bytes.push(2);
+                push_usize(bytes, extension_degree);
+                bytes.push(1); // E2Nonresidue5
+                bytes.push(1); // RawCoefficientV1
+            }
         }
     }
 
@@ -49,6 +91,17 @@ impl OpeningMethod {
     ) -> Result<usize, AkitaError> {
         match self {
             Self::EvaluationTrace => Ok(inner_ring_dimension),
+            Self::FullRingScalarExtension { .. } => {
+                if self != Self::FULL_RING_E2
+                    || extension_degree != 2
+                    || inner_ring_dimension != 128
+                {
+                    return Err(AkitaError::InvalidSetup(
+                        "full-ring scalar extension requires E2Nonresidue5/RawCoefficientV1 and native degree 128".into(),
+                    ));
+                }
+                Ok(256)
+            }
             Self::SubringCoefficientPacking {
                 challenge_subring_dimension,
             } => Ok(crate::SubringCoefficientPackingGeometry::try_new(
@@ -82,6 +135,11 @@ pub fn opening_d_segment_width(
             "group D opening dimension must be nonzero".into(),
         ));
     }
+    if opening_method.is_full_ring_scalar_extension() && opening_ring_dimension != 128 {
+        return Err(AkitaError::InvalidSetup(
+            "full-ring D uses native degree 128".into(),
+        ));
+    }
     let physical_width =
         opening_method.physical_coefficient_width(extension_degree, inner_ring_dimension)?;
     let role_subcolumns = physical_width
@@ -102,6 +160,8 @@ pub fn opening_d_segment_width(
 /// Opening policy selected by the fold that consumes a committed group.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct GroupOpeningPlan {
+    /// Explicit consuming view; serialized plans must provide this field.
+    pub source_view: crate::SourceOpeningView,
     /// Procedure used to reduce and open the group's coefficients.
     pub opening_method: OpeningMethod,
     /// Sparse fold-challenge family certified for this group's A ring or subring.
@@ -124,12 +184,42 @@ impl GroupOpeningPlan {
         num_digits_fold: usize,
     ) -> Self {
         Self {
+            source_view: crate::SourceOpeningView::Decoded,
             opening_method: OpeningMethod::EvaluationTrace,
             fold_challenge_config,
             log_basis_open,
             num_digits_open,
             num_digits_fold,
         }
+    }
+
+    pub const fn source_view(&self) -> crate::SourceOpeningView {
+        self.source_view
+    }
+
+    /// Validate the fixed raw geometry independently of producer provenance.
+    /// Retained-handle admission must additionally check the original producer.
+    pub fn validate_source_view(
+        &self,
+        profile: &GroupCommitPhaseParams,
+        extension_degree: usize,
+    ) -> Result<(), AkitaError> {
+        self.source_view.validate_source_profile(profile)?;
+        if self.source_view == crate::SourceOpeningView::Decoded {
+            return Ok(());
+        }
+        if extension_degree != 1
+            || self.opening_method != (OpeningMethod::SubringCoefficientPacking {
+                challenge_subring_dimension: 128,
+            })
+            || self.log_basis_open != 5
+            || self.num_digits_open != 26
+        {
+            return Err(AkitaError::InvalidSetup(
+                "original RAM view requires the registered native128/base32/depth26 geometry".into(),
+            ));
+        }
+        Ok(())
     }
 
     /// Canonical schedule descriptor for this consuming opening policy.
@@ -142,6 +232,7 @@ impl GroupOpeningPlan {
 
     pub(crate) fn append_descriptor_bytes(self, bytes: &mut Vec<u8>) {
         self.opening_method.append_descriptor_bytes(bytes);
+        bytes.push(self.source_view.tag());
         crate::descriptor_bytes::push_u32(bytes, self.log_basis_open);
         super::append_schedule_sparse_challenge_descriptor_bytes(
             bytes,
@@ -245,6 +336,24 @@ impl GroupOpenPhaseParams {
         )
     }
 
+    /// Explicit consuming-view admission; producer bytes remain unchanged.
+    #[allow(clippy::too_many_arguments)]
+    pub fn admit_with_view(
+        layout: GroupCommitPhaseParams,
+        num_digits_fold: usize,
+        policy: PrecommittedGroupAdmissionPolicy,
+        opening_method: OpeningMethod,
+        fold_challenge_config: SparseChallengeConfig,
+        log_basis_open: u32,
+        source_view: crate::SourceOpeningView,
+    ) -> Result<Self, AkitaError> {
+        let mut group = Self::admit(layout, num_digits_fold, policy, opening_method,
+            fold_challenge_config, log_basis_open)?;
+        group.opening.source_view = source_view;
+        group.validate()?;
+        Ok(group)
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn admit_with_setup_natural_len(
         layout: GroupCommitPhaseParams,
@@ -339,6 +448,7 @@ impl GroupOpenPhaseParams {
             profile: layout,
             setup_natural_len,
             opening: GroupOpeningPlan {
+                source_view: crate::SourceOpeningView::Decoded,
                 opening_method,
                 fold_challenge_config,
                 log_basis_open,
@@ -372,12 +482,20 @@ impl GroupOpenPhaseParams {
     pub fn validate(&self) -> Result<(), AkitaError> {
         let field_bits = self.profile.inner.matrix.sis_modulus_profile().field_bits();
         self.profile.validate(field_bits)?;
+        self.opening.validate_source_view(&self.profile, 1)?;
+        if self.setup_natural_len.is_some()
+            && self.opening.source_view != crate::SourceOpeningView::Decoded
+        {
+            return Err(AkitaError::InvalidSetup("setup prefixes require decoded openings".into()));
+        }
         if let Some(natural_len) = self.setup_natural_len {
             self.profile.validate_setup_prefix_geometry(natural_len)?;
         }
         if self.opening.fold_challenge_config.weight() != 0 {
             let challenge_dimension = match self.opening.opening_method {
-                OpeningMethod::EvaluationTrace => self.profile.inner.matrix.ring_dimension(),
+                OpeningMethod::EvaluationTrace | OpeningMethod::FullRingScalarExtension { .. } => {
+                    self.profile.inner.matrix.ring_dimension()
+                }
                 OpeningMethod::SubringCoefficientPacking {
                     challenge_subring_dimension,
                 } => challenge_subring_dimension,
@@ -457,6 +575,7 @@ impl GroupOpenPhaseParams {
         extension_degree: usize,
         opening_ring_dimension: usize,
     ) -> Result<usize, AkitaError> {
+        self.opening.validate_source_view(&self.profile, extension_degree)?;
         opening_d_segment_width(
             self.opening.opening_method,
             extension_degree,
@@ -495,6 +614,10 @@ impl GroupOpenPhaseParams {
     #[must_use]
     pub fn opening_method(&self) -> OpeningMethod {
         self.opening.opening_method
+    }
+
+    pub const fn source_view(&self) -> crate::SourceOpeningView {
+        self.opening.source_view
     }
 
     #[inline]

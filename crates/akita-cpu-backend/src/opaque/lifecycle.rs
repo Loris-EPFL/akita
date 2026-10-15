@@ -4,6 +4,14 @@ use akita_prover::backend::{ProofContext, ProofScopeId};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+mod accumulation;
+use accumulation::AccumulationState;
+
+#[derive(Default)]
+struct ProofOperations {
+    commitments: HashMap<(u32, usize), u128>,
+    accumulation: Option<AccumulationState>,
+}
 
 static NEXT_BACKEND_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -32,7 +40,7 @@ impl CpuProofSessionHandle {
             ));
         }
         self.proof.validate_owner(owner)?;
-        self.proof.validate(self.scope_id(), 0, None)?;
+        self.proof.validate_live(self.scope_id())?;
         Ok(&self.proof)
     }
 
@@ -70,7 +78,7 @@ struct ProofState {
     scope: ProofScopeId,
     active: AtomicBool,
     group_counts: Arc<[usize]>,
-    commitments: Mutex<HashMap<(u32, usize), u128>>,
+    operations: Mutex<ProofOperations>,
     plan: Option<(
         Arc<akita_params::FoldSchedule>,
         akita_params::OpeningClaimsLayout,
@@ -86,7 +94,7 @@ impl ScopeLease {
                 scope: ProofScopeId::from_raw(0),
                 active: AtomicBool::new(true),
                 group_counts: vec![usize::MAX].into(),
-                commitments: Mutex::new(HashMap::new()),
+                operations: Mutex::new(ProofOperations::default()),
                 plan: None,
             }),
         }
@@ -111,15 +119,20 @@ impl ScopeLease {
         Ok(())
     }
 
+    pub(crate) fn validate_live(&self, scope: ProofScopeId) -> Result<(), AkitaError> {
+        if scope != self.scope_id() || !self.is_active() {
+            return Err(AkitaError::InvalidInput("inactive proof scope".into()));
+        }
+        Ok(())
+    }
+
     pub(crate) fn validate(
         &self,
         scope: ProofScopeId,
         fold_level: u32,
         group_index: Option<usize>,
     ) -> Result<(), AkitaError> {
-        if scope != self.scope_id() || !self.is_active() {
-            return Err(AkitaError::InvalidInput("inactive proof scope".into()));
-        }
+        self.validate_live(scope)?;
         let group_count = self
             .state
             .group_counts
@@ -136,6 +149,12 @@ impl ScopeLease {
     }
 
     pub(crate) fn validate_context(&self, context: &ProofContext) -> Result<(), AkitaError> {
+        self.validate_completion_context(context)?;
+        self.context_occurrence(context.fold_level())?;
+        Ok(())
+    }
+
+    fn validate_completion_context(&self, context: &ProofContext) -> Result<(), AkitaError> {
         if context.backend_id() != self.state.backend_id
             || context.setup_digest() != self.state.setup_digest
         {
@@ -147,7 +166,8 @@ impl ScopeLease {
             context.scope_id(),
             context.fold_level(),
             context.group_index(),
-        )
+        )?;
+        self.validate_occurrence(context.occurrence(), context.fold_level())
     }
 
     pub(crate) fn admit_commitment(
@@ -159,9 +179,11 @@ impl ScopeLease {
         let group = context.group_index().ok_or_else(|| {
             AkitaError::Internal("commitment admission lost its validated group context".into())
         })?;
-        let mut commitments = self.state.commitments.lock().map_err(|_| {
-            AkitaError::Internal("admitted commitment map lock poisoned during admission".into())
+        let mut operations = self.state.operations.lock().map_err(|_| {
+            AkitaError::Internal("proof operation lock poisoned during admission".into())
         })?;
+        operations.validate_current(context.occurrence(), context.fold_level())?;
+        let commitments = &mut operations.commitments;
         let key = (context.fold_level(), group);
         if commitments.get(&key).is_some_and(|&id| id != commitment_id) {
             return Err(AkitaError::InvalidInput(
@@ -181,9 +203,11 @@ impl ScopeLease {
         let group = context.group_index().ok_or_else(|| {
             AkitaError::Internal("commitment validation lost its validated group context".into())
         })?;
-        let commitments = self.state.commitments.lock().map_err(|_| {
-            AkitaError::Internal("admitted commitment map lock poisoned during validation".into())
+        let operations = self.state.operations.lock().map_err(|_| {
+            AkitaError::Internal("proof operation lock poisoned during validation".into())
         })?;
+        operations.validate_current(context.occurrence(), context.fold_level())?;
+        let commitments = &operations.commitments;
         #[cfg(test)]
         if self.state.plan.is_none() {
             return Ok(());
@@ -205,7 +229,7 @@ impl ScopeLease {
         ),
         AkitaError,
     > {
-        self.validate(self.scope_id(), 0, None)?;
+        self.validate_live(self.scope_id())?;
         self.state
             .plan
             .clone()
@@ -213,6 +237,7 @@ impl ScopeLease {
     }
 
     fn finish(&self) -> Result<(), AkitaError> {
+        self.validate_finished_accumulation()?;
         self.state
             .active
             .compare_exchange(true, false, Ordering::AcqRel, Ordering::Acquire)
@@ -300,7 +325,7 @@ impl BackendIdentity {
                 scope,
                 active: AtomicBool::new(true),
                 group_counts: group_counts.into(),
-                commitments: Mutex::new(HashMap::new()),
+                operations: Mutex::new(ProofOperations::default()),
                 plan,
             }),
         })

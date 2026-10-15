@@ -22,13 +22,7 @@ pub struct AkitaCommitmentScheme<Cfg: CommitmentConfig> {
     schedules: TrustedScheduleCatalog<Cfg>,
 }
 
-impl<Cfg> AkitaCommitmentScheme<Cfg>
-where
-    Cfg: CommitmentConfig + 'static,
-    Cfg::Field: Field + CanonicalEncoding + Unreduced + PseudoMersenne + Valid + AkitaSerialize,
-    Cfg::ExtField: FpExtEncoding<Cfg::Field>,
-    Cfg::ExtField: ExtField<Cfg::Field> + Ring + Unreduced + Fold + AkitaSerialize,
-{
+impl<Cfg: CommitmentConfig> AkitaCommitmentScheme<Cfg> {
     /// Construct a scheme from a catalog already bound to `Cfg`.
     #[must_use]
     pub fn new(schedules: TrustedScheduleCatalog<Cfg>) -> Self {
@@ -50,7 +44,14 @@ where
     pub fn schedules(&self) -> &TrustedScheduleCatalog<Cfg> {
         &self.schedules
     }
-
+}
+impl<Cfg> AkitaCommitmentScheme<Cfg>
+where
+    Cfg: CommitmentConfig + 'static,
+    Cfg::Field: Field + CanonicalEncoding + Unreduced + PseudoMersenne + Valid + AkitaSerialize,
+    Cfg::ExtField: FpExtEncoding<Cfg::Field>,
+    Cfg::ExtField: ExtField<Cfg::Field> + Ring + Unreduced + Fold + AkitaSerialize,
+{
     /// Build a flat prover setup for the config's provisioning policy.
     ///
     /// `max_num_batched_polys` bounds the total polynomial count across the
@@ -123,6 +124,10 @@ where
     /// protocol transition.
     #[tracing::instrument(skip_all, name = "AkitaCommitmentScheme::batched_prove")]
     #[allow(clippy::type_complexity)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Setup, retained sources, backend, session, trusted registry, inherited binding and basis are distinct protocol inputs"
+    )]
     pub fn batched_prove<'a>(
         &self,
         setup: &AkitaProverSetup<Cfg::Field>,
@@ -134,6 +139,8 @@ where
         >,
         backend: &CpuBackend<Cfg::Field, Cfg::ExtField>,
         session: &[u8],
+        registry: &akita_transcript::InstalledRegistry,
+        augmentation: akita_transcript::InheritedAugmentation<'_>,
         basis: BasisMode,
     ) -> Result<Vec<u8>, AkitaError>
     where
@@ -161,6 +168,8 @@ where
             backend,
             opening,
             session,
+            registry,
+            augmentation,
             basis,
         )?;
         tracing::info!(

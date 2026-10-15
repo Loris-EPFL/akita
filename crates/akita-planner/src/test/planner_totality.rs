@@ -203,10 +203,7 @@ fn valid_small_grouped_root_has_a_schedule() {
     let precommitted_profile =
         GroupCommitPhaseParams::try_from_params(precommitted_group, &producer)
             .expect("scalar producer profile");
-    let key = ScheduleLookupKey {
-        final_group: PolynomialGroupLayout::singleton(8),
-        precommitteds: vec![precommitted_profile],
-    };
+    let key = ScheduleLookupKey::decoded(PolynomialGroupLayout::singleton(8), vec![precommitted_profile]);
     let schedule = find_schedule(
         &key,
         Dense::committed_source_contract().unwrap(),

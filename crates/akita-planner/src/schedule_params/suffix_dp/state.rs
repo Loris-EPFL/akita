@@ -278,6 +278,9 @@ pub(crate) struct SuffixCtx<'a> {
     /// plan, while allowing the fold-owned shared D matrix and every successor
     /// level to be rebuilt for the added groups.
     pub(crate) root_main_constraint: Option<&'a CommittedGroupParams>,
+    /// Exact original Main A/B profile; unlike adaptation, no opening or suffix guide.
+    /// This constraint and the original-source k1h1 capability apply only at level zero.
+    pub(crate) root_final_profile: Option<&'a akita_params::GroupCommitPhaseParams>,
     /// Approved scalar schedule whose structural suffix choices guide adapted
     /// planning. All length-, rank-, and security-derived values are rebuilt.
     pub(crate) adaptation_guide: Option<&'a akita_params::FoldSchedule>,

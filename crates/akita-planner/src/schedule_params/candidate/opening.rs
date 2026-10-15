@@ -9,9 +9,27 @@ pub(crate) enum PlannerOpeningCandidate {
     SubringCoefficientPacking {
         geometry: akita_params::SubringCoefficientPackingGeometry,
     },
+    FullRingScalarExtension {
+        challenge_config: SparseChallengeConfig,
+    },
 }
 
 impl PlannerOpeningCandidate {
+    pub(crate) fn full_ring_scalar_extension(
+        extension_degree: usize,
+        dimensions: CommitmentRingDims,
+    ) -> Result<Self, AkitaError> {
+        akita_params::OpeningMethod::FULL_RING_E2
+            .physical_coefficient_width(extension_degree, dimensions.d_a())?;
+        if dimensions.d_b() != 128 || dimensions.d_d() != 128 {
+            return Err(AkitaError::InvalidSetup(
+                "full-ring family requires native A/B/D degree128".into(),
+            ));
+        }
+        let challenge_config = akita_params::FULL_RING_FOLD_CHALLENGE;
+        Ok(Self::FullRingScalarExtension { challenge_config })
+    }
+
     /// Preserve the historical full-ring EvaluationTrace candidate.
     pub(crate) fn evaluation_trace(challenge_config: SparseChallengeConfig) -> Self {
         Self::EvaluationTrace { challenge_config }
@@ -76,6 +94,7 @@ impl PlannerOpeningCandidate {
     pub(crate) const fn method(self) -> akita_params::OpeningMethod {
         match self {
             Self::EvaluationTrace { .. } => akita_params::OpeningMethod::EvaluationTrace,
+            Self::FullRingScalarExtension { .. } => akita_params::OpeningMethod::FULL_RING_E2,
             Self::SubringCoefficientPacking { geometry } => {
                 akita_params::OpeningMethod::SubringCoefficientPacking {
                     challenge_subring_dimension: geometry.challenge_subring_dimension(),
@@ -86,14 +105,17 @@ impl PlannerOpeningCandidate {
 
     pub(crate) const fn challenge_config(self) -> SparseChallengeConfig {
         match self {
-            Self::EvaluationTrace { challenge_config } => challenge_config,
+            Self::EvaluationTrace { challenge_config }
+            | Self::FullRingScalarExtension { challenge_config } => challenge_config,
             Self::SubringCoefficientPacking { geometry } => geometry.fold_challenge_config(),
         }
     }
 
     pub(crate) const fn challenge_dimension(self, ambient_dimension: usize) -> usize {
         match self {
-            Self::EvaluationTrace { .. } => ambient_dimension,
+            Self::EvaluationTrace { .. } | Self::FullRingScalarExtension { .. } => {
+                ambient_dimension
+            }
             Self::SubringCoefficientPacking { geometry } => geometry.challenge_subring_dimension(),
         }
     }
@@ -108,6 +130,14 @@ impl PlannerOpeningCandidate {
         extension_degree: usize,
         dimensions: CommitmentRingDims,
     ) -> Result<(), AkitaError> {
+        if matches!(self, Self::FullRingScalarExtension { .. }) {
+            if self != Self::full_ring_scalar_extension(extension_degree, dimensions)? {
+                return Err(AkitaError::InvalidSetup(
+                    "full-ring candidate has a mismatched shell".into(),
+                ));
+            }
+            return Ok(());
+        }
         let Self::SubringCoefficientPacking { geometry } = self else {
             self.challenge_config()
                 .validate_for_ring_dim(dimensions.d_a())
@@ -222,7 +252,8 @@ mod tests {
                 akita_params::OpeningMethod::SubringCoefficientPacking {
                     challenge_subring_dimension,
                 } => challenge_subring_dimension,
-                akita_params::OpeningMethod::EvaluationTrace => unreachable!(),
+                akita_params::OpeningMethod::EvaluationTrace
+                | akita_params::OpeningMethod::FullRingScalarExtension { .. } => unreachable!(),
             })
             .collect::<Vec<_>>();
             assert_eq!(actual, expected);

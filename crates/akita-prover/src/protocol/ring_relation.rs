@@ -95,6 +95,8 @@ where
                 Some(relation_geometry),
             ) if relation_geometry == point.geometry()
                 && point.source_num_vars() == layout.num_vars()
+                && point.source_view() == opening_batch.group_view(group_index)?
+                && point.point_num_vars() == opening_batch.group_point_num_vars(group_index)?
                 && point.num_live_positions()
                     == group_params.num_live_ring_elements_per_claim()
                 && point.num_positions_per_block() == group_params.num_positions_per_block()

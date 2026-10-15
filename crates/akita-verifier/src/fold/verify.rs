@@ -8,7 +8,7 @@ use akita_serialization::{AkitaSerialize, Valid};
 use jolt_field::{CanonicalEncoding, ExtField, Field, PseudoMersenne, Ring};
 
 use akita_params::{validate_schedule_ring_dims, BasisMode, CommittedGroupBatchProfile};
-use akita_types::{FpExtEncoding, GroupBatchStatement, OpeningClaims, PolynomialGroupClaims};
+use akita_types::{FpExtEncoding, GroupBatchStatement, OpeningClaims};
 
 use crate::AkitaVerifier;
 
@@ -26,6 +26,8 @@ where
         &self,
         proof: &[u8],
         session: &[u8],
+        registry: &akita_transcript::InstalledRegistry,
+        augmentation: akita_transcript::InheritedAugmentation<'_>,
         statement: GroupBatchStatement<'_, Cfg::ExtField, Cfg::Field>,
         basis: BasisMode,
     ) -> Result<(), AkitaError> {
@@ -35,6 +37,12 @@ where
         let claims = statement.into_claims();
         claims.validate(setup.expanded().descriptor())?;
         let opening_batch = claims.committed_layout()?;
+        opening_batch.validate_basis(basis)?;
+        if opening_batch.max_point_num_vars() > setup.expanded().descriptor().max_num_vars {
+            return Err(AkitaError::InvalidSetup(
+                "opening query exceeds the installed setup point capacity".into(),
+            ));
+        }
         let (final_group, precommitteds) = claims
             .groups()
             .split_last()
@@ -106,19 +114,26 @@ where
             schedule,
             basis,
         )?;
-        let state = akita_transcript::new_verifier_channel(session, &descriptor_bytes, proof)?;
+        let endpoint_binding = akita_types::encode_opening_endpoint_binding(
+            &descriptor_bytes,
+            &batch_profile,
+            &claims,
+            |committed| committed.commitment(),
+        )?;
+        let installed = akita_transcript::InstalledContext::new_augmented(
+            registry,
+            session,
+            &descriptor_bytes,
+            augmentation,
+            &endpoint_binding,
+        )?;
+        let state = akita_transcript::new_verifier_channel(&installed, proof)?;
         let mut grinding = akita_types::VerifierGrinding::new(state, &grinding_plan);
         let raw_groups = claims
             .groups()
             .iter()
-            .map(|group| {
-                PolynomialGroupClaims::new(
-                    group.point().to_vec(),
-                    group.evaluations().to_vec(),
-                    group.commitment().commitment(),
-                )
-            })
-            .collect::<Result<Vec<_>, _>>()?;
+            .map(|group| group.clone().map_commitment(|_| group.commitment().commitment()))
+            .collect::<Vec<_>>();
         let raw_claims = OpeningClaims::from_groups(raw_groups)?;
         let root = verify_root::<Cfg::Field, Cfg::ExtField>(
             setup,

@@ -366,6 +366,9 @@ fn canonical_tail_validation_rejects_stale_body_geometry() {
             let plan = match mode {
                 RingRelationMode::QuotientLift => RelationQuotientPlan::quotient_lift(2).unwrap(),
                 RingRelationMode::ReducedEvaluation => RelationQuotientPlan::ReducedEvaluation,
+                RingRelationMode::ExactCoefficientRows => {
+                    RelationQuotientPlan::ExactCoefficientRows
+                }
             };
             let layout = WitnessLayout::new(&params, &batch, &geometry, num_chunks, plan).unwrap();
             params.own_group_mut().opening.num_digits_fold += 1;

@@ -249,6 +249,7 @@ where
     S: GroupSource<Cfg>,
 {
     let profiles = row.profiles();
+    let opening_layout = row.opening_layout().expect("trusted opening layout");
     let group_profiles: Vec<&GroupCommitPhaseParams> = profiles
         .precommitteds
         .iter()
@@ -259,10 +260,7 @@ where
         .map(|profile| profile.group.num_vars())
         .max()
         .expect("row has a final group");
-    let num_polynomials = profiles
-        .opening_layout()
-        .expect("layout")
-        .num_total_polynomials();
+    let num_polynomials = opening_layout.num_total_polynomials();
     let setup = scheme
         .setup_prover(max_num_vars, num_polynomials)
         .expect("setup");
@@ -279,7 +277,7 @@ where
             .try_into()
             .expect("digest prefix"),
     );
-    let point: Vec<Cfg::ExtField> = (0..max_num_vars)
+    let point: Vec<Cfg::ExtField> = (0..opening_layout.max_point_num_vars())
         .map(|_| Cfg::ExtField::from_u64(splitmix64(&mut seed)))
         .collect();
     let mut commitments = Vec::with_capacity(group_profiles.len());
@@ -333,8 +331,7 @@ where
     );
 
     akita_transcript::clear_thread_events();
-    let proof = scheme
-        .batched_prove(&setup, prover_data, &backend, LABEL, BasisMode::Lagrange)
+    let proof = { let native_setup = &setup; let native_opening = prover_data; let native_session = LABEL; let native_basis = BasisMode::Lagrange; akita_pcs::prepare_native_prover_context(native_setup.expanded.descriptor(), scheme.schedules(), &native_opening, native_session, &[], native_basis, 0).and_then(|native_context| scheme.batched_prove(native_setup, native_opening, &backend, native_session, native_context.registry(), native_context.augmentation(), native_basis)) }
         .expect("prove");
     let prover_events = akita_transcript::thread_events();
 
@@ -358,12 +355,7 @@ where
     scheme
         .verifier(verifier_setup)
         .and_then(|verifier| {
-            verifier.batched_verify(
-                &proof,
-                LABEL,
-                GroupBatchStatement::new(selection, verifier_claims).expect("statement"),
-                BasisMode::Lagrange,
-            )
+            { let native_statement = GroupBatchStatement::new(selection, verifier_claims).expect("statement"); let native_session = LABEL; let native_basis = BasisMode::Lagrange; akita_pcs::prepare_native_proof_context(verifier.setup().expanded().descriptor(), verifier.schedules(), &native_statement, native_session, &[], native_basis, 0).and_then(|native_context| verifier.batched_verify(&proof, native_session, native_context.registry(), native_context.augmentation(), native_statement, native_basis)) }
         })
         .expect("honest proof verifies");
     let verifier_events = akita_transcript::thread_events();

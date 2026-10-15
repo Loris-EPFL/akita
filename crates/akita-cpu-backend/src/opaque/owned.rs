@@ -36,6 +36,78 @@ where
         }
     }
 }
+/// Borrowed canonical coefficients through a retained Dense component's committed extent.
+/// Genuine plan padding is included; storage beyond the plan is excluded.
+pub struct CpuDecodedDenseComponentReader<'a, F: Field> {
+    coefficients: &'a [F],
+    num_vars: usize,
+    column: usize,
+    commitment_id: u128,
+    backend_id: u64,
+    setup_digest: [u8; 32],
+}
+
+impl<F: Field> akita_types::full_ring::FullRingCoefficientSource<F>
+    for CpuDecodedDenseComponentReader<'_, F>
+{
+    fn len(&self) -> usize { self.coefficients.len() }
+    fn coefficient(&self, index: usize) -> Result<F, AkitaError> {
+        self.coefficients.get(index).copied().ok_or_else(|| {
+            AkitaError::InvalidInput("Dense component coefficient index out of range".into())
+        })
+    }
+}
+
+impl<F: Field> CpuDecodedDenseComponentReader<'_, F> {
+    pub fn column(&self) -> usize { self.column }
+    pub fn num_vars(&self) -> usize { self.num_vars }
+    /// Actual retained commitment identity, scoped to the validated backend.
+    /// This is not an installed native source ID or a public statement digest.
+    pub fn commitment_id(&self) -> u128 { self.commitment_id }
+    pub fn backend_id(&self) -> u64 { self.backend_id }
+    pub fn setup_digest(&self) -> [u8; 32] { self.setup_digest }
+}
+
+impl<F: Field + CanonicalEncoding, E: Field> CpuBackend<F, E> {
+    /// Borrow actual Dense coefficients, rejecting non-Dense producer recipes.
+    pub fn decoded_dense_component_reader<'a>(
+        &self,
+        handle: &'a CommitmentHandle<F, E>,
+        column: usize,
+    ) -> Result<CpuDecodedDenseComponentReader<'a, F>, AkitaError> {
+        let committed = &handle.committed;
+        if handle.owner != self.owner().backend_id()
+            || column >= committed.metadata.num_polynomials()
+            || committed.metadata != SourceMetadata::try_new(
+                committed.parameters.group.num_polynomials(), committed.parameters.group.num_vars(),
+            )?
+            || committed.producer_contract.class() != sis::CommittedSourceClass::BalancedSignedDigit
+        {
+            return Err(AkitaError::InvalidInput("Dense component owner, source geometry or producer mismatch".into()));
+        }
+        committed.parameters.validate_frozen_precommit(F::MODULUS_BITS)?;
+        if committed.producer_contract.decomposition().field_bits() != F::MODULUS_BITS {
+            return Err(AkitaError::InvalidInput("Dense component contract field mismatch".into()));
+        }
+        let plan = CommitInnerPlan::from_profile(&committed.parameters);
+        let coefficients = committed.source.borrowed_dense_coefficients(&plan, column)?;
+        let logical_len = akita_error::checked::pow2(committed.metadata.num_vars())
+            .ok_or_else(|| AkitaError::InvalidInput("Dense component logical extent overflow".into()))?;
+        let physical_len = akita_error::checked::product([
+            plan.num_live_blocks, plan.num_positions_per_block, plan.ring_dimension,
+        ]).ok_or_else(|| AkitaError::InvalidInput("Dense component physical extent overflow".into()))?;
+        if coefficients.len() < logical_len || coefficients.len() > physical_len {
+            return Err(AkitaError::InvalidInput("Dense component physical coefficient extent mismatch".into()));
+        }
+        Ok(CpuDecodedDenseComponentReader {
+            coefficients, num_vars: committed.metadata.num_vars(), column,
+            commitment_id: committed.commitment_id,
+            backend_id: handle.owner,
+            setup_digest: self.owner().setup_digest(),
+        })
+    }
+}
+
 /// A reusable commitment retaining the exact source and parameters it
 /// committed, and the producer contract that admitted the source.
 pub struct CommitmentHandle<F: Field + CanonicalEncoding, E: Field> {
@@ -85,9 +157,46 @@ where
 // homogeneous group while allowing different representations in one proof.
 pub(super) trait PrivateSource<F: Field + CanonicalEncoding, E: Field>: Send + Sync {
     fn commitment_sources(&self) -> Vec<&dyn CommitmentSource<F>>;
-    fn dense_polynomials(&self) -> Result<Vec<crate::DensePoly<F>>, AkitaError>;
+    fn legacy(&self) -> Option<&dyn LegacyPrivateSource<F, E>>;
+    fn full_ring(&self) -> Option<&dyn super::full_ring::FullRingPrivateSource<F, E>>;
+    fn borrowed_dense_coefficients(
+        &self,
+        _plan: &CommitInnerPlan,
+        _column: usize,
+    ) -> Result<&[F], AkitaError> {
+        Err(AkitaError::InvalidInput("source lacks borrowed canonical Dense coefficients".into()))
+    }
+    fn original_planes(&self) -> Option<&dyn super::ordinary_projection::OrdinaryBaseSource<F>> {
+        None
+    }
+    /// Opening authority is independent of tensor/EOR and source-table access.
+    fn ordinary_opening(
+        &self,
+        backend: &CpuBackend<F, E>,
+        binding: &OperationBinding,
+        plan: &ValidatedRecursiveGroupOpeningPlan<'_, E>,
+        source: crate::opaque::openings::PreparedOpeningSource<F, E>,
+    ) -> Result<PreparedGroupOpening<E, CpuPreparedOpeningHandle<F, E>>, AkitaError> {
+        if plan.source_view() != SourceOpeningView::Decoded {
+            return Err(AkitaError::InvalidInput("legacy sources reject original RAM opening recipes".into()));
+        }
+        self.legacy().ok_or_else(|| {
+            AkitaError::InvalidInput("source has no ordinary opening capability".into())
+        })?.opening(backend, binding, plan, source)
+    }
+    fn probe(
+        &self,
+        backend: &CpuBackend<F, E>,
+        plan: &ValidatedFoldProbePlan<'_>,
+    ) -> Result<FoldProbeOutcome<super::CpuAcceptedFoldHandle<F>>, AkitaError>;
     #[cfg(feature = "response-model-diagnostics")]
     fn source_l2_sq(&self) -> Option<u128>;
+}
+
+/// Actual ring-subfield/EOR capability, separate from source ownership.
+pub(super) trait LegacyPrivateSource<F: Field + CanonicalEncoding, E: Field>:
+    Send + Sync
+{
     fn opening(
         &self,
         backend: &CpuBackend<F, E>,
@@ -95,11 +204,6 @@ pub(super) trait PrivateSource<F: Field + CanonicalEncoding, E: Field>: Send + S
         plan: &ValidatedRecursiveGroupOpeningPlan<'_, E>,
         source: crate::opaque::openings::PreparedOpeningSource<F, E>,
     ) -> Result<PreparedGroupOpening<E, CpuPreparedOpeningHandle<F, E>>, AkitaError>;
-    fn probe(
-        &self,
-        backend: &CpuBackend<F, E>,
-        plan: &ValidatedFoldProbePlan<'_>,
-    ) -> Result<FoldProbeOutcome<super::CpuAcceptedFoldHandle<F>>, AkitaError>;
     fn extension(
         &self,
         backend: &CpuBackend<F, E>,
@@ -122,7 +226,7 @@ pub(super) struct OwnedPolynomials<P> {
     pub(super) polynomials: Vec<P>,
 }
 
-impl<F, E, P> PrivateSource<F, E> for OwnedPolynomials<P>
+impl<F, E, P> LegacyPrivateSource<F, E> for OwnedPolynomials<P>
 where
     F: Field + CanonicalEncoding + AkitaSerialize + Ring + Unreduced + 'static,
     F::Wide: From<F> + jolt_field::AdditiveGroup,
@@ -144,29 +248,6 @@ where
         + RuntimeOpeningProveBackendFor<F, P>
         + RuntimeCoefficientPackingBackendFor<F, P, E>,
 {
-    #[cfg(feature = "response-model-diagnostics")]
-    fn source_l2_sq(&self) -> Option<u128> {
-        self.polynomials.iter().try_fold(0u128, |sum, p| {
-            sum.checked_add(RootPolyMeta::<F>::exact_integer_coeff_l2_sq(p)?)
-        })
-    }
-    fn commitment_sources(&self) -> Vec<&dyn CommitmentSource<F>> {
-        self.polynomials
-            .iter()
-            .map(|p| p as &dyn CommitmentSource<F>)
-            .collect()
-    }
-    fn dense_polynomials(&self) -> Result<Vec<crate::DensePoly<F>>, AkitaError> {
-        self.polynomials
-            .iter()
-            .map(|polynomial| {
-                crate::DensePoly::from_field_evals(
-                    RootPolyMeta::num_vars(polynomial),
-                    polynomial.source_coefficients()?.into_owned(),
-                )
-            })
-            .collect()
-    }
     fn opening(
         &self,
         backend: &CpuBackend<F, E>,
@@ -174,6 +255,9 @@ where
         plan: &ValidatedRecursiveGroupOpeningPlan<'_, E>,
         source: crate::opaque::openings::PreparedOpeningSource<F, E>,
     ) -> Result<PreparedGroupOpening<E, CpuPreparedOpeningHandle<F, E>>, AkitaError> {
+        if plan.source_view() != SourceOpeningView::Decoded {
+            return Err(AkitaError::InvalidInput("decoded sources reject original RAM opening recipes".into()));
+        }
         let polys = self.polynomials.iter().collect::<Vec<_>>();
         dispatch_for_field!(
             ProtocolDispatchSlot::Role(RingRole::Inner),
@@ -274,22 +358,6 @@ where
             }
         )
     }
-    fn probe(
-        &self,
-        backend: &CpuBackend<F, E>,
-        plan: &ValidatedFoldProbePlan<'_>,
-    ) -> Result<FoldProbeOutcome<super::CpuAcceptedFoldHandle<F>>, AkitaError> {
-        let polys = self.polynomials.iter().collect::<Vec<_>>();
-        dispatch_for_field!(
-            ProtocolDispatchSlot::Role(RingRole::Inner),
-            F,
-            plan.ring_dimension(),
-            |D| {
-                let batch = <P as RootOpeningSource<F, D>>::opening_batch(&polys)?;
-                FoldResponseKernel::probe(backend, Some(backend.prepared()?), batch, plan)
-            }
-        )
-    }
     fn extension(
         &self,
         _backend: &CpuBackend<F, E>,
@@ -345,6 +413,93 @@ where
             eta,
             extra,
             claim,
+        )
+    }
+}
+
+impl<F, E, P> PrivateSource<F, E> for OwnedPolynomials<P>
+where
+    F: Field + CanonicalEncoding + AkitaSerialize + Ring + Unreduced + 'static,
+    F::Wide: From<F> + jolt_field::AdditiveGroup,
+    E: ExtField<F>
+        + FpExtEncoding<F>
+        + MulBaseUnreduced<F>
+        + Unreduced
+        + Fold
+        + AkitaSerialize
+        + 'static,
+    P: SourceCoefficients<F>
+        + RuntimeRootProvePoly<F>
+        + CommitmentSource<F>
+        + Send
+        + Sync
+        + 'static,
+    CpuBackend<F, E>: ComputeBackendSetup<F, PreparedSetup = CpuPreparedSetup<F>>
+        + FoldHandleBackend<F, AcceptedFold = super::CpuAcceptedFoldHandle<F>>
+        + RuntimeOpeningProveBackendFor<F, P>
+        + RuntimeCoefficientPackingBackendFor<F, P, E>,
+{
+    fn legacy(&self) -> Option<&dyn LegacyPrivateSource<F, E>> {
+        Some(self)
+    }
+    fn full_ring(&self) -> Option<&dyn super::full_ring::FullRingPrivateSource<F, E>> {
+        None
+    }
+    #[cfg(feature = "response-model-diagnostics")]
+    fn source_l2_sq(&self) -> Option<u128> {
+        self.polynomials.iter().try_fold(0u128, |sum, p| {
+            sum.checked_add(RootPolyMeta::<F>::exact_integer_coeff_l2_sq(p)?)
+        })
+    }
+    fn commitment_sources(&self) -> Vec<&dyn CommitmentSource<F>> {
+        self.polynomials
+            .iter()
+            .map(|p| p as &dyn CommitmentSource<F>)
+            .collect()
+    }
+    fn borrowed_dense_coefficients(
+        &self,
+        plan: &CommitInnerPlan,
+        column: usize,
+    ) -> Result<&[F], AkitaError> {
+        let polynomial = self.polynomials.get(column).ok_or_else(|| {
+            AkitaError::InvalidInput("Dense source column out of range".into())
+        })?;
+        if polynomial.descriptor()?.class() != crate::commitment::CommitSourceClass::Dense {
+            return Err(AkitaError::InvalidInput("canonical Dense reader rejects another producer class".into()));
+        }
+        let offerings = polynomial.available_polynomial_types(plan)?;
+        let index = offerings.as_slice().iter().position(|&kind| {
+            kind == crate::commitment::PolynomialType::Dense(crate::commitment::DenseType::Coefficients)
+        }).ok_or_else(|| AkitaError::InvalidInput("Dense source does not offer borrowed coefficients".into()))?;
+        match polynomial.represent_as(offerings.select(index)?, plan)? {
+            crate::commitment::PolynomialRepresentation::Dense(
+                crate::commitment::DenseRepresentation::Coefficients(coefficients),
+            ) => {
+                let physical_len = akita_error::checked::product([
+                    plan.num_live_blocks, plan.num_positions_per_block, plan.ring_dimension,
+                ]).ok_or_else(|| AkitaError::InvalidInput("Dense component physical extent overflow".into()))?;
+                coefficients.coefficients().get(..physical_len).ok_or_else(|| {
+                    AkitaError::InvalidInput("Dense component physical coefficient extent mismatch".into())
+                })
+            }
+            _ => Err(AkitaError::InvalidInput("Dense source returned a different representation".into())),
+        }
+    }
+    fn probe(
+        &self,
+        backend: &CpuBackend<F, E>,
+        plan: &ValidatedFoldProbePlan<'_>,
+    ) -> Result<FoldProbeOutcome<super::CpuAcceptedFoldHandle<F>>, AkitaError> {
+        let polys = self.polynomials.iter().collect::<Vec<_>>();
+        dispatch_for_field!(
+            ProtocolDispatchSlot::Role(RingRole::Inner),
+            F,
+            plan.ring_dimension(),
+            |D| {
+                let batch = <P as RootOpeningSource<F, D>>::opening_batch(&polys)?;
+                FoldResponseKernel::probe(backend, Some(backend.prepared()?), batch, plan)
+            }
         )
     }
 }
@@ -410,7 +565,7 @@ where
     {
         let prepared = self.prepared()?;
         let layout =
-            crate::commitment::resolve_polynomial_group_layout(&polynomials, &prepared.expanded)?;
+            crate::commitment::resolve_polynomial_group_layout(&polynomials, prepared.expanded()?)?;
         let metadata = SourceMetadata::try_new(layout.num_polynomials(), layout.num_vars())?;
         Ok(SourceHandle {
             owner: self.owner().backend_id(),
@@ -497,5 +652,62 @@ impl<F: Field + CanonicalEncoding, I: crate::OneHotIndex> SourceCoefficients<F>
             }
         }
         Ok(std::borrow::Cow::Owned(values))
+    }
+}
+
+#[cfg(test)]
+mod component_reader_tests {
+    use super::*;
+    use jolt_field::{Prime128OffsetA7F7 as K, Zero};
+
+    #[test]
+    fn retained_dense_coefficients_preserve_source_values_and_committed_padding() {
+        let rings = (0..8).map(|ring| {
+            akita_algebra::CyclotomicRing::<K, 128>::from_coefficients(core::array::from_fn(|coefficient| {
+                if (ring + coefficient) % 2 == 0 {
+                    K::from_u64((ring * 128 + coefficient + 1) as u64)
+                } else {
+                    -K::from_u64((ring * 128 + coefficient + 1) as u64)
+                }
+            }))
+        }).collect();
+        let dense = crate::DensePoly::<K>::from_ring_coeffs(rings).unwrap();
+        let owner = OwnedPolynomials { polynomials: vec![dense] };
+        let plan = CommitInnerPlan {
+            ring_dimension: 128, num_live_blocks: 1, n_a: 1,
+            num_positions_per_block: 8, num_digits_inner: 26, log_basis_inner: 5,
+        };
+        for positions in [8, 16] {
+            let plan = CommitInnerPlan { num_positions_per_block: positions, ..plan };
+            let coefficients = <OwnedPolynomials<crate::DensePoly<K>> as PrivateSource<K, K>>::borrowed_dense_coefficients(
+                &owner, &plan, 0,
+            ).unwrap();
+            for index in 0..1024 {
+                let ring = index / 128;
+                let coefficient = index % 128;
+                let magnitude = K::from_u64(index as u64 + 1);
+                assert_eq!(coefficients.get(index).copied().unwrap(),
+                    if (ring + coefficient) % 2 == 0 { magnitude } else { -magnitude });
+            }
+            for index in 1024..positions * 128 {
+                assert_eq!(coefficients.get(index).copied().unwrap(), K::zero());
+            }
+            assert!(coefficients.get(positions * 128).is_none());
+        }
+        assert!(<OwnedPolynomials<crate::DensePoly<K>> as PrivateSource<K, K>>::borrowed_dense_coefficients(
+            &owner, &plan, 1,
+        ).is_err());
+        for positions in [1 << 20, 1usize << (usize::BITS - 1)] {
+            let oversized = CommitInnerPlan { num_positions_per_block: positions, ..plan };
+            assert!(<OwnedPolynomials<crate::DensePoly<K>> as PrivateSource<K, K>>::borrowed_dense_coefficients(
+                &owner, &oversized, 0,
+            ).is_err());
+        }
+        let onehot = OwnedPolynomials {
+            polynomials: vec![crate::OneHotPoly::<K>::new(128, vec![Some(0); 2]).unwrap()],
+        };
+        assert!(<OwnedPolynomials<crate::OneHotPoly<K>> as PrivateSource<K, K>>::borrowed_dense_coefficients(
+            &onehot, &plan, 0,
+        ).is_err());
     }
 }

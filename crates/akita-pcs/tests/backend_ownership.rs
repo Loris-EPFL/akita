@@ -65,8 +65,13 @@ fn false_root_evaluation_claim_returns_invalid_input() {
             output.private_handle,
             scheme.schedules(),
         );
+        let context = akita_pcs::prepare_native_prover_context(
+            setup.expanded.descriptor(), scheme.schedules(), &opening,
+            DOMAIN, &[], BasisMode::Lagrange, 0,
+        ).expect("false evaluation fixture has valid public context");
         assert!(matches!(
-            scheme.batched_prove(&setup, opening, &backend, DOMAIN, BasisMode::Lagrange),
+            scheme.batched_prove(&setup, opening, &backend, DOMAIN,
+                context.registry(), context.augmentation(), BasisMode::Lagrange),
             Err(akita_pcs::AkitaError::InvalidInput(_))
         ));
     });
@@ -121,19 +126,24 @@ fn shared_commitment_supports_concurrent_deterministic_proofs_after_rejected_req
         drop(source);
 
         let foreign = CpuBackend::new(setup.expanded.clone()).unwrap();
-        assert!(scheme
+        let foreign_opening = claims(
+            &output.committed_group, output.private_handle.clone(), scheme.schedules(),
+        );
+        let foreign_context = akita_pcs::prepare_native_prover_context(
+            setup.expanded.descriptor(), scheme.schedules(), &foreign_opening,
+            DOMAIN, &[], BasisMode::Lagrange, 0,
+        ).expect("foreign owner fixture has valid public context");
+        assert!(matches!(scheme
             .batched_prove(
                 &setup,
-                claims(
-                    &output.committed_group,
-                    output.private_handle.clone(),
-                    scheme.schedules()
-                ),
+                foreign_opening,
                 &foreign,
                 DOMAIN,
+                foreign_context.registry(),
+                foreign_context.augmentation(),
                 BasisMode::Lagrange,
             )
-            .is_err());
+            , Err(akita_pcs::AkitaError::InvalidInput(_))));
 
         let mut fields = output.committed_group.rows().coeffs().to_vec();
         fields[0] += F::one();
@@ -141,15 +151,22 @@ fn shared_commitment_supports_concurrent_deterministic_proofs_after_rejected_req
             *output.committed_group.profile(),
             Commitment::new(RingVec::from_coeffs(fields)),
         );
-        assert!(scheme
+        let changed_opening = claims(&changed, output.private_handle.clone(), scheme.schedules());
+        let changed_context = akita_pcs::prepare_native_prover_context(
+            setup.expanded.descriptor(), scheme.schedules(), &changed_opening,
+            DOMAIN, &[], BasisMode::Lagrange, 0,
+        ).expect("changed commitment fixture has valid public context");
+        assert!(matches!(scheme
             .batched_prove(
                 &setup,
-                claims(&changed, output.private_handle.clone(), scheme.schedules()),
+                changed_opening,
                 &backend,
                 DOMAIN,
+                changed_context.registry(),
+                changed_context.augmentation(),
                 BasisMode::Lagrange,
             )
-            .is_err());
+            , Err(akita_pcs::AkitaError::InvalidInput(_))));
 
         // This request reaches arithmetic with a valid owner and commitment,
         // then fails because the claimed scalar differs from the retained source.
@@ -165,9 +182,14 @@ fn shared_commitment_supports_concurrent_deterministic_proofs_after_rejected_req
             scheme.schedules(),
         )
         .unwrap();
-        assert!(scheme
-            .batched_prove(&setup, false_claim, &backend, DOMAIN, BasisMode::Lagrange,)
-            .is_err());
+        let false_context = akita_pcs::prepare_native_prover_context(
+            setup.expanded.descriptor(), scheme.schedules(), &false_claim,
+            DOMAIN, &[], BasisMode::Lagrange, 0,
+        ).expect("false scalar fixture has valid public context");
+        assert!(matches!(scheme
+            .batched_prove(&setup, false_claim, &backend, DOMAIN,
+                false_context.registry(), false_context.augmentation(), BasisMode::Lagrange)
+            , Err(akita_pcs::AkitaError::InvalidInput(_))));
 
         // A public statement can arrive over the wire without carrying the
         // CPU's in-memory RingVec layout metadata.
@@ -186,8 +208,7 @@ fn shared_commitment_supports_concurrent_deterministic_proofs_after_rejected_req
         let prove = || {
             let opening = claims(&decoded, output.private_handle.clone(), scheme.schedules());
             let selection = opening.selection();
-            let proof = scheme
-                .batched_prove(&setup, opening, &backend, DOMAIN, BasisMode::Lagrange)
+            let proof = { let native_setup = &setup; let native_opening = opening; let native_session = DOMAIN; let native_basis = BasisMode::Lagrange; akita_pcs::prepare_native_prover_context(native_setup.expanded.descriptor(), scheme.schedules(), &native_opening, native_session, &[], native_basis, 0).and_then(|native_context| scheme.batched_prove(native_setup, native_opening, &backend, native_session, native_context.registry(), native_context.augmentation(), native_basis)) }
                 .unwrap();
             let public = OpeningClaims::from_groups(vec![PolynomialGroupClaims::new(
                 vec![F::from_u64(2); NV],
@@ -199,12 +220,7 @@ fn shared_commitment_supports_concurrent_deterministic_proofs_after_rejected_req
             scheme
                 .verifier(scheme.setup_verifier(&setup).unwrap().clone())
                 .and_then(|verifier| {
-                    verifier.batched_verify(
-                        &proof,
-                        DOMAIN,
-                        GroupBatchStatement::new(selection, public).unwrap(),
-                        BasisMode::Lagrange,
-                    )
+                    { let native_statement = GroupBatchStatement::new(selection, public).unwrap(); let native_session = DOMAIN; let native_basis = BasisMode::Lagrange; akita_pcs::prepare_native_proof_context(verifier.setup().expanded().descriptor(), verifier.schedules(), &native_statement, native_session, &[], native_basis, 0).and_then(|native_context| verifier.batched_verify(&proof, native_session, native_context.registry(), native_context.augmentation(), native_statement, native_basis)) }
                 })
                 .unwrap();
             proof

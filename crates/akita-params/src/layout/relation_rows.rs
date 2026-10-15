@@ -120,6 +120,35 @@ impl RelationRowRun {
 }
 
 impl RelationRhsLayout {
+    /// Exact native coefficient rows, excluding separately declared scalar claims.
+    /// Counts actual native planes, not the padded common relation block.
+    pub fn coefficient_row_count(&self) -> Result<usize, AkitaError> {
+        self.validate()?;
+        let mut total = Some(0usize);
+        self.visit_row_runs(|run| {
+            let (count, geometry) = match run {
+                RelationRowRun::Consistency { geometry, .. }
+                | RelationRowRun::CompressionF { geometry, .. }
+                | RelationRowRun::CompressionH { geometry, .. } => (1, geometry),
+                RelationRowRun::Inner {
+                    count, geometry, ..
+                }
+                | RelationRowRun::Outer {
+                    count, geometry, ..
+                }
+                | RelationRowRun::Opening {
+                    count, geometry, ..
+                } => (count, geometry),
+            };
+            total = total.and_then(|n| {
+                count
+                    .checked_mul(geometry.physical_coefficient_width())
+                    .and_then(|width| n.checked_add(width))
+            });
+        })?;
+        total.ok_or_else(|| AkitaError::InvalidSetup("coefficient row count overflow".into()))
+    }
+
     fn checked_uncompressed_row_count(&self) -> Result<usize, AkitaError> {
         let row_count = self.groups.iter().try_fold(0usize, |rows, group| {
             rows.checked_add(1)

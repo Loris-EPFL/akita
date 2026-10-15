@@ -45,9 +45,7 @@ dependencies = [
  "akita-error",
  "akita-transcript",
  "jolt-field",
- "keccak 0.1.6",
  "serde",
- "shake",
  "smallvec",
 ]
 
@@ -75,6 +73,7 @@ dependencies = [
  "akita-config",
  "akita-error",
  "akita-params",
+ "akita-planner",
  "akita-prover",
  "akita-serialization",
  "akita-sumcheck",
@@ -129,6 +128,7 @@ dependencies = [
  "akita-schedules",
  "akita-serialization",
  "akita-setup",
+ "akita-sumcheck",
  "akita-transcript",
  "akita-types",
  "akita-verifier",
@@ -255,6 +255,8 @@ version = "0.1.0"
 dependencies = [
  "akita-error",
  "jolt-field",
+ "jolt-transcript",
+ "sha3 0.11.0",
  "spongefish",
 ]
 
@@ -287,6 +289,7 @@ dependencies = [
  "akita-config",
  "akita-error",
  "akita-params",
+ "akita-prover",
  "akita-serialization",
  "akita-sumcheck",
  "akita-transcript",
@@ -573,15 +576,6 @@ name = "const-oid"
 version = "0.10.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a6ef517f0926dd24a1582492c791b6a4818a4d94e789a334894aa15b0d12f55c"
-
-[[package]]
-name = "cpufeatures"
-version = "0.2.17"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "59ed5838eebb26a2bb2e58f6d5b5316989ae9d08bab10e0e6d103e656d1b0280"
-dependencies = [
- "libc",
-]
 
 [[package]]
 name = "cpufeatures"
@@ -906,7 +900,6 @@ checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
 [[package]]
 name = "jolt-field"
 version = "0.1.0"
-source = "git+https://github.com/a16z/jolt?rev=1618f4b6dc97effcec3568ca7cf2b7420ac9e75f#1618f4b6dc97effcec3568ca7cf2b7420ac9e75f"
 dependencies = [
  "cc",
  "num-traits",
@@ -919,7 +912,6 @@ dependencies = [
 [[package]]
 name = "jolt-poly"
 version = "0.1.0"
-source = "git+https://github.com/a16z/jolt?rev=1618f4b6dc97effcec3568ca7cf2b7420ac9e75f#1618f4b6dc97effcec3568ca7cf2b7420ac9e75f"
 dependencies = [
  "jolt-field",
  "jolt-utils",
@@ -931,9 +923,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "jolt-transcript"
+version = "0.1.0"
+dependencies = [
+ "jolt-field",
+ "rand 0.8.8",
+ "shake",
+ "spongefish",
+]
+
+[[package]]
 name = "jolt-utils"
 version = "0.1.0"
-source = "git+https://github.com/a16z/jolt?rev=1618f4b6dc97effcec3568ca7cf2b7420ac9e75f#1618f4b6dc97effcec3568ca7cf2b7420ac9e75f"
 dependencies = [
  "num-traits",
 ]
@@ -951,21 +952,12 @@ dependencies = [
 
 [[package]]
 name = "keccak"
-version = "0.1.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cb26cec98cce3a3d96cbb7bced3c4b16e3d13f27ec56dbd62cbc8f39cfb9d653"
-dependencies = [
- "cpufeatures 0.2.17",
-]
-
-[[package]]
-name = "keccak"
 version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d8f198d1db720e4940b5a493201d199d9f24f568f8f746bd13706243a2f71598"
 dependencies = [
  "cfg-if",
- "cpufeatures 0.3.1",
+ "cpufeatures",
 ]
 
 [[package]]
@@ -1803,7 +1795,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "446ba717509524cb3f22f17ecc096f10f4822d76ab5c0b9822c5f9c284e825f4"
 dependencies = [
  "cfg-if",
- "cpufeatures 0.3.1",
+ "cpufeatures",
  "digest 0.11.3",
 ]
 
@@ -1814,7 +1806,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "be176f1a57ce4e3d31c1a166222d9768de5954f811601fb7ca06fc8203905ce1"
 dependencies = [
  "digest 0.11.3",
- "keccak 0.2.2",
+ "keccak",
 ]
 
 [[package]]
@@ -1824,7 +1816,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bc9bad02c26382724b2d2692c6f179285e4b54eeecd7968f52a50059c3c11759"
 dependencies = [
  "digest 0.11.3",
- "keccak 0.2.2",
+ "keccak",
  "sponge-cursor",
 ]
 
@@ -1835,7 +1827,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "09057cb2149ad4cbd2da1e26b351f9a4c354219421229c69c3063e6f61947c4a"
 dependencies = [
  "digest 0.11.3",
- "keccak 0.2.2",
+ "keccak",
  "sponge-cursor",
 ]
 
@@ -1888,7 +1880,7 @@ source = "git+https://github.com/arkworks-rs/spongefish?rev=ef9741346a150039427d
 dependencies = [
  "blake2",
  "digest 0.11.3",
- "keccak 0.2.2",
+ "keccak",
  "p3-koala-bear 0.6.3",
  "rand 0.8.8",
  "sha2",

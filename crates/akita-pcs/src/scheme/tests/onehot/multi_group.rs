@@ -19,10 +19,7 @@ fn multi_group_key<Cfg: CommitmentConfig>(
                 .final_group
         })
         .collect();
-    akita_params::ScheduleLookupKey {
-        final_group: akita_params::PolynomialGroupLayout::new(final_num_vars, final_size),
-        precommitteds,
-    }
+    akita_params::ScheduleLookupKey::decoded(akita_params::PolynomialGroupLayout::new(final_num_vars, final_size), precommitteds)
 }
 
 /// Produce and verify a folded multi-group-root one-hot same-point proof from
@@ -244,14 +241,7 @@ where
     .expect("multi-group prover data");
     let selection = prover_claims.selection();
 
-    let proof = scheme
-        .batched_prove(
-            &setup,
-            prover_claims,
-            &stack,
-            b"test/multi-group-unequal",
-            BasisMode::Lagrange,
-        )
+    let proof = { let native_setup = &setup; let native_opening = prover_claims; let native_session = b"test/multi-group-unequal"; let native_basis = BasisMode::Lagrange; crate::prepare_native_prover_context(native_setup.expanded.descriptor(), scheme.schedules(), &native_opening, native_session, &[], native_basis, 0).and_then(|native_context| scheme.batched_prove(native_setup, native_opening, &stack, native_session, native_context.registry(), native_context.augmentation(), native_basis)) }
         .expect("multi-group prove");
     assert!(multi_group_schedule.num_fold_levels() >= 2);
 
@@ -280,12 +270,7 @@ where
     scheme
         .verifier(verifier_setup.clone())
         .and_then(|verifier| {
-            verifier.batched_verify(
-                &proof,
-                b"test/multi-group-unequal",
-                GroupBatchStatement::new(selection, verify_claims).expect("multi-group statement"),
-                BasisMode::Lagrange,
-            )
+            { let native_statement = GroupBatchStatement::new(selection, verify_claims).expect("multi-group statement"); let native_session = b"test/multi-group-unequal"; let native_basis = BasisMode::Lagrange; crate::prepare_native_proof_context(verifier.setup().expanded().descriptor(), verifier.schedules(), &native_statement, native_session, &[], native_basis, 0).and_then(|native_context| verifier.batched_verify(&proof, native_session, native_context.registry(), native_context.augmentation(), native_statement, native_basis)) }
         })
         .expect("multi-group verify");
 
@@ -306,16 +291,23 @@ where
             .expect("swapped final verifier group"),
         ])
         .expect("swapped verifier claims");
+        let swapped_statement = GroupBatchStatement::new(selection, swapped_claims)
+            .expect("swapped-group statement");
+        let swapped_context = crate::prepare_native_proof_context(
+            verifier_setup.expanded().descriptor(), scheme.schedules(),
+            &swapped_statement, b"test/multi-group-unequal", &[], BasisMode::Lagrange, 0,
+        );
         assert!(
             scheme
                 .verifier(verifier_setup.clone())
-                .and_then(|verifier| verifier.batched_verify(
+                .and_then(|verifier| swapped_context.and_then(|context| verifier.batched_verify(
                     &proof,
                     b"test/multi-group-unequal",
-                    GroupBatchStatement::new(selection, swapped_claims)
-                        .expect("swapped-group statement"),
+                    context.registry(),
+                    context.augmentation(),
+                    swapped_statement,
                     BasisMode::Lagrange
-                ))
+                )))
                 .is_err(),
             "swapped group commitments must reject"
         );
@@ -329,16 +321,23 @@ where
                 .expect("tampered final verifier group"),
         ])
         .expect("tampered verifier claims");
+        let tampered_statement = GroupBatchStatement::new(selection, tampered_claims)
+            .expect("tampered-opening statement");
+        let tampered_context = crate::prepare_native_proof_context(
+            verifier_setup.expanded().descriptor(), scheme.schedules(),
+            &tampered_statement, b"test/multi-group-unequal", &[], BasisMode::Lagrange, 0,
+        );
         assert!(
             scheme
                 .verifier(verifier_setup.clone())
-                .and_then(|verifier| verifier.batched_verify(
+                .and_then(|verifier| tampered_context.and_then(|context| verifier.batched_verify(
                     &proof,
                     b"test/multi-group-unequal",
-                    GroupBatchStatement::new(selection, tampered_claims)
-                        .expect("tampered-opening statement"),
+                    context.registry(),
+                    context.augmentation(),
+                    tampered_statement,
                     BasisMode::Lagrange
-                ))
+                )))
                 .is_err(),
             "tampered group opening must reject"
         );

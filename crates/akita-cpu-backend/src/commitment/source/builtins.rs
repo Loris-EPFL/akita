@@ -79,7 +79,7 @@ impl<F: Field> CommitmentSource<F> for crate::DensePoly<F> {
                 let logical_len = checked_logical_len(self.descriptor()?.num_vars())?;
                 Ok(PolynomialRepresentation::Dense(
                     DenseRepresentation::PredecomposedDigits(PredecomposedDigitPlanes {
-                        bytes,
+                        bytes: DigitPlaneStorage::Unpacked(bytes),
                         ring_dimension: plan.ring_dimension,
                         num_digits: plan.num_digits_inner,
                         log_basis: plan.log_basis_inner,
@@ -177,6 +177,13 @@ impl<F: Field> CommitmentSource<F> for crate::opaque::RecursiveWitnessFlat {
             CommitSourceClass::ShortNorm,
             "akita_recursive_packed",
         )
+        .map(|descriptor| {
+            if self.has_full_ring_extent() {
+                descriptor.with_full_physical_extent()
+            } else {
+                descriptor
+            }
+        })
     }
 
     fn committed_centered_reach(
@@ -195,6 +202,7 @@ impl<F: Field> CommitmentSource<F> for crate::opaque::RecursiveWitnessFlat {
         &self,
         plan: &CommitInnerPlan,
     ) -> Result<AvailablePolynomialTypes, AkitaError> {
+        self.validate_full_ring_plan(plan)?;
         validate_plan_extents(&<Self as CommitmentSource<F>>::descriptor(self)?, plan)?;
         let (_, signed_bit_width, _, _) = self.packed_representation_parts();
         AvailablePolynomialTypes::new(vec![PolynomialType::ShortNorm(ShortNormType::new(

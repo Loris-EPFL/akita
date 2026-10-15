@@ -231,8 +231,7 @@ fn streamed_relation_rows_match_cached_kernel() {
     let z_segment = vec![[1i32; D], [-2i32; D], [3i32; D], [5i32; D]];
     let extent = 2usize.saturating_mul(t_hat.len()).max(z_segment.len());
     let view = prepared
-        .expanded
-        .shared_matrix()
+        .matrix()
         .ring_view::<D>(1, extent)
         .expect("field view");
     let streamed = fused_split_eq_quotients_streamed_prover_bounds(
@@ -275,8 +274,7 @@ fn streamed_relation_rows_match_cached_q32_kernel() {
     let z_segment = vec![[1i32; D], [-2i32; D], [3i32; D], [5i32; D]];
     let extent = 2usize.saturating_mul(t_hat.len()).max(z_segment.len());
     let view = prepared
-        .expanded
-        .shared_matrix()
+        .matrix()
         .ring_view::<D>(1, extent)
         .expect("field view");
     let streamed = fused_split_eq_quotients_streamed_prover_bounds(
@@ -315,8 +313,7 @@ fn cached_and_streamed_reject_the_same_short_matrix_shape() {
     let prepared = prepared();
     let e_hat = vec![[1i8; D], [-1i8; D]];
     let view = prepared
-        .expanded
-        .shared_matrix()
+        .matrix()
         .ring_view::<D>(1, 1)
         .expect("one-element field view");
     let streamed = digit_relation_rows_streamed_prover_bounds(view.as_slice(), 1, &e_hat, 2);
@@ -338,8 +335,7 @@ fn streamed_chunked_z_quotient_matches_cached_kernel() {
     let z_segment: Vec<[i32; D]> = (0..64).map(|i| [(i % 23) - 11; D]).collect();
     let extent = z_segment.len();
     let view = prepared
-        .expanded
-        .shared_matrix()
+        .matrix()
         .ring_view::<D>(1, extent)
         .expect("field view");
     let streamed = fused_split_eq_quotients_streamed_prover_bounds(
@@ -389,8 +385,7 @@ fn streamed_chunked_t_rows_match_cached_kernel() {
     let t_hat = vec![[1i8; D128]; T_LEN];
     let z_segment = vec![[1i32; D128], [-2i32; D128], [3i32; D128], [1i32; D128]];
     let view = prepared
-        .expanded
-        .shared_matrix()
+        .matrix()
         .ring_view::<D128>(1, T_LEN)
         .expect("field view");
     let streamed = fused_split_eq_quotients_streamed_prover_bounds(

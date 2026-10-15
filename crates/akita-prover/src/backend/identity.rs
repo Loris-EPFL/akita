@@ -8,6 +8,7 @@ pub struct ProofContext {
     setup_digest: [u8; 32],
     scope_id: ProofScopeId,
     fold_level: u32,
+    occurrence: u32,
     group_index: Option<usize>,
 }
 
@@ -23,8 +24,17 @@ impl ProofContext {
             setup_digest,
             scope_id,
             fold_level,
+            occurrence: 0,
             group_index: None,
         }
+    }
+    /// Occurrences distinguish repeated use of one installed fold template.
+    /// Like the other context fields this is a request, not completion authority.
+    pub const fn with_occurrence(self, occurrence: u32) -> Self {
+        Self { occurrence, ..self }
+    }
+    pub const fn occurrence(&self) -> u32 {
+        self.occurrence
     }
     pub const fn for_group(self, group_index: usize) -> Self {
         Self {

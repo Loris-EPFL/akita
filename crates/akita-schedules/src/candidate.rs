@@ -155,6 +155,7 @@ mod tests {
         const INNER_WIDTH: usize = 6_400_000_000_001;
         const RING_DIMENSION: usize = 64;
         let policy = PlannerPolicy {
+            opening_family: crate::PlannerOpeningFamily::Legacy,
             cost_model: PlannerCostModelId::NoncePayloadAndSetupEnvelopeV2,
             selective_l2_response_model: crate::SelectiveL2ResponseModelId::Disabled,
             selection_policy: SelectionPolicyId::MinEstimatedExactProofAndWorkV5,
@@ -209,6 +210,7 @@ mod tests {
         const RING_DIMENSION: usize = 128;
         const RESPONSE_CAP: u128 = 1 << 20;
         let policy = PlannerPolicy {
+            opening_family: crate::PlannerOpeningFamily::Legacy,
             cost_model: PlannerCostModelId::NoncePayloadAndSetupEnvelopeV2,
             selective_l2_response_model: crate::SelectiveL2ResponseModelId::Disabled,
             selection_policy: SelectionPolicyId::MinEstimatedExactProofAndWorkV5,

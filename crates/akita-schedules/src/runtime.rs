@@ -202,6 +202,25 @@ pub enum RingDimensionScheduleMode {
 /// Number of leading fold levels covered by the audited adaptive search.
 pub const ADAPTIVE_SEARCH_LEVELS: usize = 2;
 
+/// Offline opening-family domain; independent of the extension degree.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PlannerOpeningFamily {
+    Legacy,
+    /// Ordinary outer grouped reduction followed immediately by an A-only terminal.
+    FullRingE2OuterDirect,
+    /// Compact inner update, final normalization, three shrinking folds and A-only terminal.
+    FullRingE2InnerRecursive,
+}
+
+impl PlannerOpeningFamily {
+    pub const fn is_full_ring_e2(self) -> bool {
+        matches!(
+            self,
+            Self::FullRingE2OuterDirect | Self::FullRingE2InnerRecursive
+        )
+    }
+}
+
 /// Runtime schedule validation policy.
 ///
 /// The compatibility name stays `PlannerPolicy` during the migration because
@@ -209,6 +228,7 @@ pub const ADAPTIVE_SEARCH_LEVELS: usize = 2;
 /// only use this as validation policy; search remains in `akita-planner`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PlannerPolicy {
+    pub opening_family: PlannerOpeningFamily,
     pub cost_model: PlannerCostModelId,
     pub selective_l2_response_model: SelectiveL2ResponseModelId,
     pub selection_policy: SelectionPolicyId,
@@ -257,6 +277,34 @@ impl PlannerPolicy {
     /// The checked conversion and multiplication keep malformed custom policy
     /// values from truncating or overflowing in verifier-reachable pricing.
     pub fn challenge_field_bits(&self) -> Result<u32, AkitaError> {
+        if self.opening_family.is_full_ring_e2()
+            && (self.claim_ext_degree != 2
+                || self.chal_ext_degree != 2
+                || self.sis_modulus_profile != SisModulusProfileId::Q128OffsetA7F7
+                || self.decomposition.field_bits() != 128
+                || self.selective_l2_response_model != SelectiveL2ResponseModelId::Disabled
+                || self.inner_basis_range != (5, 5)
+                || self.opening_basis_range != (5, 5)
+                || self.recursive_setup_planning
+                || self.witness_chunk.uses_multi_chunk())
+        {
+            return Err(AkitaError::InvalidSetup(
+                "full-ring E2 policy requires q128, base32, direct setup and one chunk".into(),
+            ));
+        }
+        if self.opening_family == PlannerOpeningFamily::FullRingE2InnerRecursive
+            && (self.decomposition.log_basis != 5
+                || self.decomposition.log_commit_bound != 1
+                || self.ring_dimension_schedule_mode
+                    != (RingDimensionScheduleMode::UniformDimension {
+                        ring_dimension: 128,
+                    }))
+        {
+            return Err(AkitaError::InvalidSetup(
+                "compact inner policy requires direct Boolean main, base32 and uniform degree128"
+                    .into(),
+            ));
+        }
         for (name, degree) in [
             ("claim extension degree", self.claim_ext_degree),
             ("challenge extension degree", self.chal_ext_degree),
@@ -544,6 +592,9 @@ pub struct NonterminalLevelPayloadBytes {
     pub relation_geometry: akita_params::RelationAddressGeometry,
 }
 
+/// Size the native level and only construct decoded EOR geometry when the
+/// opening method requires an extension reduction. Same-field raw views keep
+/// their original relation geometry and have no EOR payload.
 #[doc(hidden)]
 pub fn nonterminal_level_payload_bytes(
     policy: &PlannerPolicy,
@@ -571,10 +622,10 @@ pub fn nonterminal_level_payload_bytes(
         next_outer_payload,
     )?
     .encoded_len()?;
-    let eor = if matches!(
-        params.opening_method(),
-        akita_params::OpeningMethod::EvaluationTrace
-    ) {
+    let eor = if params
+        .opening_method()
+        .requires_extension_opening_reduction(policy.claim_ext_degree)
+    {
         let opening_shape = opening_layout.aggregate_polynomial_group_layout()?;
         akita_params::extension_opening_reduction_level_bytes(
             challenge_field_bits,
@@ -652,18 +703,39 @@ fn expanded_schedule_proof_components(
     let terminal_predecessor_rounds = predecessor_rounds.ok_or_else(|| {
         AkitaError::InvalidSetup("terminal proof is missing predecessor relation geometry".into())
     })?;
-    let terminal_eor = akita_params::extension_opening_reduction_level_bytes(
-        policy.challenge_field_bits()?,
-        policy.claim_ext_degree,
-        PolynomialGroupLayout::singleton(terminal_predecessor_rounds),
-    )?;
-    let terminal_planner_bytes = akita_params::terminal_response_planner_bytes(
-        field_bits,
-        &schedule.terminal.response_shape,
-        schedule.terminal.response_l2_sq_cap(),
-    )?;
-    let terminal_max_bytes =
-        akita_params::terminal_response_max_bytes(field_bits, &schedule.terminal.response_shape)?;
+    let terminal_eor = if schedule
+        .terminal
+        .opening_method
+        .requires_extension_opening_reduction(policy.claim_ext_degree)
+    {
+        akita_params::extension_opening_reduction_level_bytes(
+            policy.challenge_field_bits()?,
+            policy.claim_ext_degree,
+            PolynomialGroupLayout::singleton(terminal_predecessor_rounds),
+        )?
+    } else {
+        0
+    };
+    let (terminal_planner_bytes, terminal_max_bytes) = if schedule
+        .terminal
+        .opening_method
+        .is_full_ring_scalar_extension()
+    {
+        let bytes = schedule.terminal.fixed_payload_bytes(field_bits)?;
+        (bytes, bytes)
+    } else {
+        (
+            akita_params::terminal_response_planner_bytes(
+                field_bits,
+                &schedule.terminal.response_shape,
+                schedule.terminal.response_l2_sq_cap(),
+            )?,
+            akita_params::terminal_response_max_bytes(
+                field_bits,
+                &schedule.terminal.response_shape,
+            )?,
+        )
+    };
     let grinding_plan = akita_params::derive_transcript_grinding_plan_from_public_shape(
         schedule,
         &key.opening_layout()?,
@@ -896,6 +968,13 @@ pub fn planned_next_witness_len(
     final_num_polys: usize,
     num_chunks: usize,
 ) -> Result<Option<usize>, AkitaError> {
+    if params.opening_method().is_full_ring_scalar_extension() {
+        let layout = params
+            .opening_layout_for_final_group(PolynomialGroupLayout::new(0, final_num_polys))?;
+        return params
+            .output_witness_len_for_field_bits(field_bits, extension_degree, &layout)
+            .map(Some);
+    }
     if !params.precommitted_groups().is_empty() {
         return Err(AkitaError::InvalidSetup(
             "multi-group root witness sizing must use CommittedGroupParams::output_witness_len"
@@ -941,6 +1020,7 @@ mod tests {
 
     fn adaptive_policy() -> PlannerPolicy {
         PlannerPolicy {
+            opening_family: PlannerOpeningFamily::Legacy,
             cost_model: PlannerCostModelId::NoncePayloadAndSetupEnvelopeV2,
             selective_l2_response_model: SelectiveL2ResponseModelId::TypedProtocolMomentsV1,
             selection_policy: SelectionPolicyId::MinFirstDirectSetupThenExactProofAndWorkV5,

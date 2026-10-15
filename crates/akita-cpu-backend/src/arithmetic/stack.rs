@@ -55,3 +55,35 @@ where
         self.prepared
     }
 }
+
+impl<'a, F, E> OperationCtx<'a, F, crate::opaque::CpuBackend<F, E>>
+where
+    F: Field + CanonicalEncoding,
+{
+    /// Bind actual installed role material to its owning backend.
+    pub(crate) fn for_full_ring(
+        backend: &'a crate::opaque::CpuBackend<F, E>,
+        prepared: &'a crate::opaque::CpuPreparedSetup<F>,
+    ) -> Result<Self, AkitaError> {
+        let owned = if let Some(role) = prepared.full_ring_role() {
+            backend.full_ring_prepared(role)?
+        } else {
+            if backend.full_ring_setup()?.shared_prefix().is_none() {
+                return Err(AkitaError::InvalidSetup(
+                    "independent full-ring roles cannot use a native prefix allocation".into(),
+                ));
+            }
+            backend.prepared()?
+        };
+        if !core::ptr::eq(owned, prepared) {
+            return Err(AkitaError::InvalidSetup(
+                "full-ring matrix belongs to another backend".into(),
+            ));
+        }
+        Ok(Self {
+            backend,
+            prepared,
+            _field: PhantomData,
+        })
+    }
+}

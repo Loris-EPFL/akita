@@ -1,10 +1,16 @@
 //! Public opening claims and layout-only opening geometry.
+//!
+//! Public query arity and producer source arity are deliberately distinct.
+//! Original RAM plane claims carry an explicit registered root view through
+//! owned, borrowed, and commitment-mapped representations. Setup, suffix, and
+//! terminal constructors remain decoded; point length alone grants no raw
+//! authority.
 
 use crate::proof::scheme::OpeningPoints;
 use crate::proof::setup::AkitaSetupDescriptor;
 use crate::CommittedGroup;
 use akita_error::{checked, AkitaError};
-use akita_params::layout::opening_layout::{OpeningClaimsLayout, PolynomialGroupLayout};
+use akita_params::layout::opening_layout::{OpeningClaimsLayout, OpeningGroupLayout, PolynomialGroupLayout, SourceOpeningView};
 use akita_params::{GrindingSite, OpeningScheduleSelection};
 use jolt_field::{CanonicalEncoding, ExtField, Field};
 
@@ -12,6 +18,7 @@ use jolt_field::{CanonicalEncoding, ExtField, Field};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PolynomialGroupClaims<'a, F: Clone, C = ()> {
     point: OpeningPoints<'a, F>,
+    view: SourceOpeningView,
     evaluations: Vec<F>,
     commitment: C,
 }
@@ -30,9 +37,50 @@ impl<'a, F: Clone, C> PolynomialGroupClaims<'a, F, C> {
         }
         Ok(Self {
             point: point.into(),
+            view: SourceOpeningView::Decoded,
             evaluations,
             commitment,
         })
+    }
+
+    /// One scalar on the fixed original RAM coefficient/digit/position/block grid.
+    pub fn original_ram_planes_v1(
+        point: impl Into<OpeningPoints<'a, F>>,
+        evaluation: F,
+        commitment: C,
+    ) -> Result<Self, AkitaError> {
+        let point = point.into();
+        if point.len() != 21 {
+            return Err(AkitaError::InvalidPointDimension { expected: 21, actual: point.len() });
+        }
+        Ok(Self {
+            point,
+            view: SourceOpeningView::OriginalRamPlanesV1,
+            evaluations: vec![evaluation],
+            commitment,
+        })
+    }
+
+    pub const fn source_view(&self) -> SourceOpeningView {
+        self.view
+    }
+
+    pub fn opening_layout(&self) -> Result<OpeningGroupLayout, AkitaError> {
+        let source = match self.view {
+            SourceOpeningView::Decoded => PolynomialGroupLayout::new(self.point.len(), self.evaluations.len()),
+            SourceOpeningView::OriginalRamPlanesV1 => PolynomialGroupLayout::singleton(16),
+        };
+        OpeningGroupLayout::new(source, self.view)
+    }
+
+    /// Transform the payload without losing query authority or copying point data.
+    pub fn map_commitment<D>(self, map: impl FnOnce(C) -> D) -> PolynomialGroupClaims<'a, F, D> {
+        PolynomialGroupClaims {
+            point: self.point,
+            view: self.view,
+            evaluations: self.evaluations,
+            commitment: map(self.commitment),
+        }
     }
 
     /// Complete opening point owned by this group.
@@ -43,6 +91,19 @@ impl<'a, F: Clone, C> PolynomialGroupClaims<'a, F, C> {
     /// Number of variables in this group's opening point.
     pub fn num_vars(&self) -> usize {
         self.point.len()
+    }
+
+    /// Query arity; unlike `source_num_vars`, this is 21 for raw RAM.
+    pub fn point_num_vars(&self) -> usize {
+        self.point.len()
+    }
+
+    /// Immutable logical source arity, not the raw query-grid dimension.
+    pub fn source_num_vars(&self) -> usize {
+        match self.view {
+            SourceOpeningView::Decoded => self.point.len(),
+            SourceOpeningView::OriginalRamPlanesV1 => 16,
+        }
     }
 
     /// Claimed evaluations, one per committed polynomial.
@@ -114,16 +175,18 @@ impl<'a, E: Clone, F: Field> OpeningClaims<'a, E, &'a CommittedGroup<F>> {
         let mut groups = Vec::with_capacity(self.groups.len());
         for group in &self.groups {
             let declared = group.commitment.profile().group;
-            if declared.num_vars() != group.point.len()
+            group.view.validate_source_profile(group.commitment.profile())?;
+            let opening = OpeningGroupLayout::new(declared, group.view)?;
+            if opening.point_num_vars() != group.point.len()
                 || declared.num_polynomials() != group.evaluations.len()
             {
                 return Err(AkitaError::InvalidInput(
                     "claim group shape does not match its commitment profile".to_string(),
                 ));
             }
-            groups.push(declared);
+            groups.push(opening);
         }
-        OpeningClaimsLayout::from_groups(groups)
+        OpeningClaimsLayout::from_opening_groups(groups)
     }
 }
 
@@ -134,16 +197,18 @@ impl<'a, E: Clone, F: Field> OpeningClaims<'a, E, CommittedGroup<F>> {
         let mut groups = Vec::with_capacity(self.groups.len());
         for group in &self.groups {
             let declared = group.commitment.profile().group;
-            if declared.num_vars() != group.point.len()
+            group.view.validate_source_profile(group.commitment.profile())?;
+            let opening = OpeningGroupLayout::new(declared, group.view)?;
+            if opening.point_num_vars() != group.point.len()
                 || declared.num_polynomials() != group.evaluations.len()
             {
                 return Err(AkitaError::InvalidInput(
                     "claim group shape does not match its commitment profile".to_string(),
                 ));
             }
-            groups.push(declared);
+            groups.push(opening);
         }
-        OpeningClaimsLayout::from_groups(groups)
+        OpeningClaimsLayout::from_opening_groups(groups)
     }
 }
 
@@ -164,6 +229,11 @@ impl<'a, F: Clone, C> OpeningClaims<'a, F, C> {
             if group.evaluations.is_empty() {
                 return Err(AkitaError::InvalidProof);
             }
+            if group.view == SourceOpeningView::OriginalRamPlanesV1
+                && (group.point.len() != 21 || group.evaluations.len() != 1)
+            {
+                return Err(AkitaError::InvalidProof);
+            }
         }
         Ok(())
     }
@@ -171,7 +241,7 @@ impl<'a, F: Clone, C> OpeningClaims<'a, F, C> {
     /// Validate consistency plus public capacity against the setup limits.
     pub fn validate(&self, seed: &AkitaSetupDescriptor) -> Result<(), AkitaError> {
         self.check()?;
-        let max_num_vars = self.layout()?.max_num_vars();
+        let max_num_vars = self.layout()?.max_point_num_vars();
         if max_num_vars > seed.max_num_vars {
             return Err(AkitaError::InvalidPointDimension {
                 expected: seed.max_num_vars,
@@ -218,6 +288,10 @@ impl<'a, F: Clone, C> OpeningClaims<'a, F, C> {
             .ok_or(AkitaError::InvalidProof)
     }
 
+    pub fn group_source_view(&self, g: usize) -> Result<SourceOpeningView, AkitaError> {
+        self.groups.get(g).map(PolynomialGroupClaims::source_view).ok_or(AkitaError::InvalidProof)
+    }
+
     /// Borrow one group's commitment.
     pub fn group_commitment(&self, g: usize) -> Result<&C, AkitaError> {
         self.groups
@@ -234,12 +308,21 @@ impl<'a, F: Clone, C> OpeningClaims<'a, F, C> {
     /// Structural view for setup, planner, and config code.
     pub fn layout(&self) -> Result<OpeningClaimsLayout, AkitaError> {
         self.check()?;
-        OpeningClaimsLayout::from_groups(
-            self.groups
-                .iter()
-                .map(|group| PolynomialGroupLayout::new(group.point.len(), group.evaluations.len()))
-                .collect(),
+        OpeningClaimsLayout::from_opening_groups(
+            self.groups.iter().map(PolynomialGroupClaims::opening_layout)
+                .collect::<Result<Vec<_>, _>>()?,
         )
+    }
+}
+
+impl<'a, F: Clone, C> OpeningClaims<'a, F, C> {
+    /// Consume a batch while retaining each group's source-opening view.
+    pub fn map_groups<D>(
+        self,
+        mut map: impl FnMut(C) -> D,
+    ) -> Result<OpeningClaims<'a, F, D>, AkitaError> {
+        OpeningClaims::from_groups(self.groups.into_iter()
+            .map(|group| group.map_commitment(&mut map)).collect())
     }
 }
 
@@ -272,10 +355,91 @@ where
     grinding.grinded_ext_challenges::<F, L>(site, layout.num_total_polynomials())
 }
 
+/// Canonical complete original endpoint binding for inherited indexed contexts.
+/// Profiles remain producer-only; views and all public point/value/payload
+/// coefficients are framed separately in commitment order.
+pub fn encode_opening_endpoint_binding<F, E, C>(
+    instance_descriptor: &[u8],
+    profiles: &akita_params::CommittedGroupBatchProfile,
+    claims: &OpeningClaims<'_, E, C>,
+    commitment: impl for<'c> Fn(&'c C) -> &'c crate::Commitment<F>,
+) -> Result<Vec<u8>, AkitaError>
+where
+    F: Field + CanonicalEncoding,
+    E: ExtField<F>,
+{
+    claims.check()?;
+    profiles.validate(F::MODULUS_BITS)?;
+    if profiles.precommitteds.len().checked_add(1) != Some(claims.num_groups()) {
+        return Err(AkitaError::InvalidProof);
+    }
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(b"akita/opening-endpoint/v8");
+    append_endpoint_length(&mut bytes, instance_descriptor.len())?;
+    bytes.extend_from_slice(instance_descriptor);
+    append_endpoint_length(&mut bytes, E::DEGREE)?;
+    append_endpoint_length(&mut bytes, claims.num_groups())?;
+    for (profile, group) in profiles.precommitteds.iter()
+        .chain(core::iter::once(&profiles.final_group)).zip(claims.groups())
+    {
+        group.source_view().validate_source_profile(profile)?;
+        let opening = OpeningGroupLayout::new(profile.group, group.source_view())?;
+        if opening.point_num_vars() != group.point_num_vars()
+            || profile.group.num_polynomials() != group.num_evaluations()
+        {
+            return Err(AkitaError::InvalidProof);
+        }
+        profile.append_descriptor_bytes(&mut bytes);
+        bytes.push(group.source_view().tag());
+        append_endpoint_length(&mut bytes, group.point_num_vars())?;
+        for &value in group.point() {
+            for limb in 0..E::DEGREE {
+                append_endpoint_field(&mut bytes, value.base_coefficient(limb))?;
+            }
+        }
+        append_endpoint_length(&mut bytes, group.num_evaluations())?;
+        for &value in group.evaluations() {
+            for limb in 0..E::DEGREE {
+                append_endpoint_field(&mut bytes, value.base_coefficient(limb))?;
+            }
+        }
+        let coefficients = commitment(group.commitment()).rows().coeffs();
+        let source_coefficients = profile.outer_slice_count.complete_source_coefficients(
+            profile.outer.matrix.output_rank(), profile.outer.matrix.ring_dimension(),
+        )?;
+        let expected_coefficients = akita_params::CompressionChainPlan::for_complete_source(
+            profile.outer.matrix.sis_modulus_profile(), source_coefficients,
+        )?.terminal_coefficients();
+        if coefficients.len() != expected_coefficients {
+            return Err(AkitaError::InvalidSize { expected: expected_coefficients, actual: coefficients.len() });
+        }
+        append_endpoint_length(&mut bytes, coefficients.len())?;
+        for &value in coefficients {
+            append_endpoint_field(&mut bytes, value)?;
+        }
+    }
+    Ok(bytes)
+}
+
+fn append_endpoint_length(bytes: &mut Vec<u8>, value: usize) -> Result<(), AkitaError> {
+    let value = u64::try_from(value).map_err(|_| AkitaError::InvalidProof)?;
+    bytes.extend_from_slice(&value.to_le_bytes());
+    Ok(())
+}
+
+fn append_endpoint_field<F: CanonicalEncoding>(bytes: &mut Vec<u8>, value: F) -> Result<(), AkitaError> {
+    let start = bytes.len();
+    let end = start.checked_add(F::NUM_BYTES).ok_or(AkitaError::InvalidProof)?;
+    bytes.try_reserve(F::NUM_BYTES).map_err(|_| AkitaError::InvalidProof)?;
+    bytes.resize(end, 0);
+    value.to_bytes_le(bytes.get_mut(start..end).ok_or(AkitaError::InvalidProof)?);
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use jolt_field::{Prime128OffsetA7F7, Ring, Zero};
+    use jolt_field::{One, Prime128OffsetA7F7, Ring, Zero};
 
     type F = Prime128OffsetA7F7;
 
@@ -395,5 +559,65 @@ mod tests {
             aggregate_bytes - final_only_bytes,
             extra_partial_bytes + extra_round_bytes + extra_terminal_claim_bytes
         );
+    }
+
+    #[test]
+    fn raw_claims_preserve_view_when_copying_and_mapping_payloads() {
+        let raw = PolynomialGroupClaims::original_ram_planes_v1(vec![0u64; 21], 7, 11).unwrap();
+        assert_eq!(raw.source_num_vars(), 16);
+        assert_eq!(raw.point_num_vars(), 21);
+        let batch = OpeningClaims::from_groups(vec![raw]).unwrap();
+        let copied = batch.clone();
+        let mapped = batch.map_groups(|payload| payload.to_string()).unwrap();
+        assert_eq!(copied.group_source_view(0).unwrap(), SourceOpeningView::OriginalRamPlanesV1);
+        assert_eq!(mapped.group_source_view(0).unwrap(), SourceOpeningView::OriginalRamPlanesV1);
+        assert_eq!(mapped.layout().unwrap().group_layout(0).unwrap(), &PolynomialGroupLayout::singleton(16));
+        assert_eq!(mapped.layout().unwrap().group_point_num_vars(0).unwrap(), 21);
+        assert!(PolynomialGroupClaims::original_ram_planes_v1(vec![0u64; 16], 7, ()).is_err());
+        let decoded = PolynomialGroupClaims::new(vec![0u64; 21], vec![7], ()).unwrap();
+        assert_eq!(decoded.source_view(), SourceOpeningView::Decoded);
+        assert_eq!(decoded.source_num_vars(), 21);
+    }
+
+    #[test]
+    fn endpoint_binding_preserves_original_profiles_and_authenticates_every_public_value() {
+        let profile = akita_params::test_fixtures::original_ram_profile();
+        profile.validate_frozen_precommit(128).unwrap();
+        let profiles = akita_params::CommittedGroupBatchProfile::from_profiles(vec![profile]).unwrap();
+        let group = crate::CommittedGroup::new(profile, crate::Commitment::new(
+            crate::RingVec::from_coeffs(vec![F::zero(); 8]),
+        ));
+        let raw = OpeningClaims::from_groups(vec![
+            PolynomialGroupClaims::original_ram_planes_v1(vec![F::zero(); 21], F::zero(), group.clone()).unwrap(),
+        ]).unwrap();
+        let stripped = raw.clone().map_groups(|group| group.commitment).unwrap();
+        let encoded = encode_opening_endpoint_binding(b"instance", &profiles, &raw, |g| g.commitment()).unwrap();
+        assert_eq!(encoded, encode_opening_endpoint_binding(b"instance", &profiles, &stripped, |c| c).unwrap());
+        let mut changed = raw.clone();
+        changed.groups[0].evaluations[0] = F::one();
+        assert_ne!(encoded, encode_opening_endpoint_binding(b"instance", &profiles, &changed, |g| g.commitment()).unwrap());
+        assert_ne!(encoded, encode_opening_endpoint_binding(b"another instance", &profiles, &raw, |g| g.commitment()).unwrap());
+        for axis in [0, 7, 12, 20] {
+            let mut changed = raw.clone();
+            let mut point = vec![F::zero(); 21];
+            point[axis] = F::one();
+            changed.groups[0].point = point.into();
+            assert_ne!(encoded, encode_opening_endpoint_binding(b"instance", &profiles, &changed, |g| g.commitment()).unwrap());
+        }
+        let mut changed = raw.clone();
+        let mut coefficients = vec![F::zero(); 8];
+        coefficients[7] = F::one();
+        changed.groups[0].commitment.commitment = crate::Commitment::new(crate::RingVec::from_coeffs(coefficients));
+        assert_ne!(encoded, encode_opening_endpoint_binding(b"instance", &profiles, &changed, |g| g.commitment()).unwrap());
+        changed.groups[0].commitment.commitment = crate::Commitment::new(crate::RingVec::from_coeffs(vec![F::zero(); 7]));
+        assert!(encode_opening_endpoint_binding(b"instance", &profiles, &changed, |g| g.commitment()).is_err());
+        let mut changed = raw.clone();
+        changed.groups[0].commitment.profile.inner.digits.num_digits = 25;
+        assert!(changed.committed_layout().is_err());
+        let decoded = OpeningClaims::from_groups(vec![
+            PolynomialGroupClaims::new(vec![F::zero(); 16], vec![F::zero()], group).unwrap(),
+        ]).unwrap();
+        assert_ne!(encoded, encode_opening_endpoint_binding(b"instance", &profiles, &decoded, |g| g.commitment()).unwrap());
+        assert_eq!(raw.committed_layout().unwrap().groups(), decoded.committed_layout().unwrap().groups());
     }
 }

@@ -16,6 +16,8 @@ impl CpuWitnessHandle {
             akita_params::witness_commitment_domain_len(logical_len, commitment_ring_dimension)?;
         Ok(Self {
             pending_successor: None,
+            full_ring_context: None,
+            full_ring_source_id: None,
             relation_plan: None,
             manifest: crate::opaque::RecursiveWitnessManifest::try_new(
                 logical_len,
@@ -42,6 +44,8 @@ impl CpuWitnessHandle {
         )?;
         Ok(Self {
             pending_successor: self.pending_successor,
+            full_ring_context: self.full_ring_context,
+            full_ring_source_id: self.full_ring_source_id,
             relation_plan: self.relation_plan,
             manifest,
             binding: self.binding,
@@ -129,6 +133,37 @@ impl<F: Field> crate::commitment::CommitmentSource<F> for RecursiveCommitSource<
     }
 }
 
+impl<F: Field, E> crate::opaque::CpuBackend<F, E> {
+    pub(crate) fn advance_ordinary_witness_level(
+        &self,
+        witness: &mut CpuWitnessHandle,
+    ) -> Result<(), AkitaError> {
+        let parent = witness.operation_binding();
+        self.validate_binding(&parent)?;
+        if parent.scope_lease().is_accumulation()? {
+            self.owner().abort_scope(parent.scope_lease());
+            return Err(AkitaError::InvalidInput(
+                "accumulation promotion requires complete strong-check authority".into(),
+            ));
+        }
+        let next = parent.fold_level().checked_add(1).ok_or_else(|| {
+            AkitaError::Internal("admitted witness successor fold level overflow".into())
+        })?;
+        if witness.pending_successor != Some(next) {
+            return Err(AkitaError::InvalidInput(
+                "witness level transition requires its successor commitment".into(),
+            ));
+        }
+        let binding = parent
+            .for_level_operation(next, parent.operation_id())
+            .with_group(None);
+        self.validate_binding(&binding)?;
+        witness.set_operation_binding(binding);
+        witness.pending_successor = None;
+        Ok(())
+    }
+}
+
 impl<F, E> crate::opaque::OpaqueWitnessCommitKernel<F, E> for crate::opaque::CpuBackend<F, E>
 where
     F: Field
@@ -152,160 +187,186 @@ where
         AkitaError,
     > {
         let parent = witness.operation_binding();
-        self.validate_binding(&parent)?;
-        if witness.pending_successor.is_some() {
-            return Err(AkitaError::InvalidInput(
-                "witness already committed for its next level".into(),
-            ));
-        }
-        let (schedule, _) = parent.scope_lease().proof_plan()?;
-        let matches_schedule = match plan.parameters() {
-            crate::opaque::WitnessCommitmentParameters::Recursive(parameters) => schedule
-                .recursive_folds
-                .get(parent.fold_level() as usize)
-                .is_some_and(|fold| &fold.params == parameters),
-            crate::opaque::WitnessCommitmentParameters::Terminal(parameters) => {
-                parent.fold_level() as usize == schedule.recursive_folds.len()
-                    && &schedule.terminal == parameters
+        let result = (|| {
+            self.validate_binding(&parent)?;
+            if witness.pending_successor.is_some() {
+                return Err(AkitaError::InvalidInput(
+                    "witness already committed for its next level".into(),
+                ));
             }
-        };
-        if !matches_schedule {
-            return Err(AkitaError::InvalidInput(
-                "witness commitment differs from the admitted successor".into(),
-            ));
-        }
-        if witness.manifest.logical_len() != plan.logical_len()
-            || akita_params::witness_commitment_domain_len(
-                plan.logical_len(),
-                plan.ring_dimension(),
-            )? != plan.padded_len()
-        {
-            return Err(AkitaError::InvalidInput(
-                "recursive commitment disagrees with witness geometry".into(),
-            ));
-        }
-        let execution = match plan.parameters() {
-            crate::opaque::WitnessCommitmentParameters::Recursive(parameters) => {
-                crate::commitment::CommitmentExecutionPlan::for_recursive(
-                    parameters,
-                    parent.fold_level() as usize,
-                    1,
-                )?
+            let (schedule, _) = parent.scope_lease().proof_plan()?;
+            let matches_schedule = match plan.parameters() {
+                crate::opaque::WitnessCommitmentParameters::Recursive(parameters) => schedule
+                    .recursive_folds
+                    .get(parent.fold_level() as usize)
+                    .is_some_and(|fold| &fold.params == parameters),
+                crate::opaque::WitnessCommitmentParameters::Terminal(parameters) => {
+                    parent.fold_level() as usize == schedule.recursive_folds.len()
+                        && &schedule.terminal == parameters
+                }
+            };
+            if !matches_schedule {
+                return Err(AkitaError::InvalidInput(
+                    "witness commitment differs from the admitted successor".into(),
+                ));
             }
-            crate::opaque::WitnessCommitmentParameters::Terminal(parameters) => {
-                crate::commitment::CommitmentExecutionPlan::for_terminal(
-                    parameters,
-                    parent.fold_level() as usize,
-                )?
+            if witness.manifest.logical_len() != plan.logical_len()
+                || akita_params::witness_commitment_domain_len(
+                    plan.logical_len(),
+                    plan.ring_dimension(),
+                )? != plan.padded_len()
+            {
+                return Err(AkitaError::InvalidInput(
+                    "recursive commitment disagrees with witness geometry".into(),
+                ));
             }
-        };
-        if execution.inner().ring_dimension != plan.ring_dimension() {
-            return Err(AkitaError::Internal(
-                "witness commitment execution ring dimension differs from the successor plan"
-                    .into(),
-            ));
-        }
-        witness = witness.align_for_commitment_ring_dim(plan.ring_dimension())?;
-        let terminal = matches!(
-            plan.parameters(),
-            crate::opaque::WitnessCommitmentParameters::Terminal(_)
-        );
-        let tensor = match (terminal, plan.source_encoding()) {
-            (true, _) => E::DEGREE != 1,
-            (false, Some(akita_params::CommittedSourceEncoding::CanonicalCoefficientTable)) => {
-                false
+            let execution = match plan.parameters() {
+                crate::opaque::WitnessCommitmentParameters::Recursive(parameters) => {
+                    crate::commitment::CommitmentExecutionPlan::for_recursive(
+                        parameters,
+                        parent.fold_level() as usize,
+                        1,
+                    )?
+                }
+                crate::opaque::WitnessCommitmentParameters::Terminal(parameters) => {
+                    crate::commitment::CommitmentExecutionPlan::for_terminal(
+                        parameters,
+                        parent.fold_level() as usize,
+                    )?
+                }
+            };
+            if execution.inner().ring_dimension != plan.ring_dimension() {
+                return Err(AkitaError::Internal(
+                    "witness commitment execution ring dimension differs from the successor plan"
+                        .into(),
+                ));
             }
-            (
-                false,
+            witness = witness.align_for_commitment_ring_dim(plan.ring_dimension())?;
+            let tensor = match plan.source_encoding() {
+                Some(akita_params::CommittedSourceEncoding::CanonicalCoefficientTable) => false,
                 Some(akita_params::CommittedSourceEncoding::TensorSubfieldProjection {
                     extension_degree,
-                }),
-            ) if extension_degree == E::DEGREE => true,
-            _ => {
-                return Err(AkitaError::InvalidInput(
-                    "invalid successor source encoding".into(),
-                ))
+                }) if extension_degree == E::DEGREE => true,
+                _ => {
+                    return Err(AkitaError::InvalidInput(
+                        "invalid successor source encoding".into(),
+                    ))
+                }
+            };
+            if tensor {
+                dispatch_for_field!(
+                    ProtocolDispatchSlot::Role(RingRole::Inner),
+                    F,
+                    plan.ring_dimension(),
+                    |D| witness.tensor_pack::<F, E, D>()
+                )?;
             }
-        };
-        if tensor {
-            dispatch_for_field!(
-                ProtocolDispatchSlot::Role(RingRole::Inner),
-                F,
-                plan.ring_dimension(),
-                |D| witness.tensor_pack::<F, E, D>()
-            )?;
+            let executor = if schedule
+                .terminal
+                .opening_method
+                .is_full_ring_scalar_extension()
+            {
+                let successor = self
+                    .full_ring_setup()?
+                    .descriptor()
+                    .successor(parent.fold_level() as usize)?;
+                match (successor, plan.parameters()) {
+                    (
+                        akita_types::FullRingSuccessor::FullCommitment { source },
+                        crate::opaque::WitnessCommitmentParameters::Recursive(_),
+                    ) => {
+                        witness.full_ring_source_id = Some(source);
+                        CommitmentExecutor::cpu_full_ring(
+                            self,
+                            Some(source),
+                            Vec::new(),
+                            crate::commitment::PortableStatePolicy,
+                        )?
+                    }
+                    (
+                        akita_types::FullRingSuccessor::Terminal { a },
+                        crate::opaque::WitnessCommitmentParameters::Terminal(_),
+                    ) => {
+                        witness.full_ring_source_id = None;
+                        CommitmentExecutor::cpu_full_ring_roles(
+                            self,
+                            akita_types::FullRingCommitmentRoles {
+                                inner: a,
+                                outer: None,
+                                compression: Vec::new(),
+                            },
+                            Vec::new(),
+                            crate::commitment::PortableStatePolicy,
+                        )?
+                    }
+                    _ => {
+                        return Err(AkitaError::InvalidInput(
+                            "successor commitment differs from installed transition".into(),
+                        ))
+                    }
+                }
+            } else {
+                let prepared = self.prepared()?;
+                CommitmentExecutor::cpu(
+                    self,
+                    prepared,
+                    prepared.expanded()?,
+                    Vec::new(),
+                    crate::commitment::PortableStatePolicy,
+                )?
+            };
+            let source = witness.commitment_source();
+            let sources: [&dyn crate::commitment::CommitmentSource<F>; 1] = [&source];
+            let (public, state) = match execution.mode() {
+                crate::commitment::CommitmentExecutionMode::Full => {
+                    let (public, state) = executor.execute_full(&execution, &sources)?.into_parts();
+                    (Some(public), state)
+                }
+                crate::commitment::CommitmentExecutionMode::Uncompressed => {
+                    let (public, state) = executor
+                        .execute_uncompressed(&execution, &sources)?
+                        .into_parts();
+                    (Some(public), state)
+                }
+                crate::commitment::CommitmentExecutionMode::InnerOnly => {
+                    (None, executor.execute_inner(&execution, &sources)?)
+                }
+            };
+            let mut material =
+                crate::opaque::CpuCommitmentMaterial::from_state(state, &execution, 1)?;
+            let successor = self.next_level_binding(parent.clone())?;
+            material.bind(successor.clone());
+            material.bind_commitment(successor.operation_id(), public.clone());
+            let binding =
+                match (public, plan.binding()) {
+                    (Some(public), akita_params::NextWitnessBindingPolicy::OuterPayload) => {
+                        crate::opaque::NextWitnessBindingMessage::OuterPayload(public)
+                    }
+                    (None, akita_params::NextWitnessBindingPolicy::TerminalInnerState) => {
+                        crate::opaque::NextWitnessBindingMessage::TerminalInnerState(
+                            crate::opaque::TerminalCommitmentMaterialKernel::terminal_message(
+                                self, &material,
+                            )?,
+                        )
+                    }
+                    _ => return Err(AkitaError::Internal(
+                        "witness commitment payload differs from the next witness binding policy"
+                            .into(),
+                    )),
+                };
+            // One lineage identifies the next committed witness and its material.
+            witness.set_operation_binding(parent.for_operation(successor.operation_id()));
+            witness.pending_successor = Some(successor.fold_level());
+            Ok(crate::opaque::WitnessCommitmentOutput::new(
+                binding, witness, material,
+            ))
+        })();
+        if result.is_err() && parent.scope_lease().is_accumulation().unwrap_or(true) {
+            self.owner().abort_scope(parent.scope_lease());
         }
-        let prepared = self.prepared()?;
-        let executor = CommitmentExecutor::cpu(
-            self,
-            prepared,
-            &prepared.expanded,
-            Vec::new(),
-            crate::commitment::PortableStatePolicy,
-        )?;
-        let source = witness.commitment_source();
-        let sources: [&dyn crate::commitment::CommitmentSource<F>; 1] = [&source];
-        let (public, state) = match execution.mode() {
-            crate::commitment::CommitmentExecutionMode::Full => {
-                let (public, state) = executor.execute_full(&execution, &sources)?.into_parts();
-                (Some(public), state)
-            }
-            crate::commitment::CommitmentExecutionMode::Uncompressed => {
-                let (public, state) = executor
-                    .execute_uncompressed(&execution, &sources)?
-                    .into_parts();
-                (Some(public), state)
-            }
-            crate::commitment::CommitmentExecutionMode::InnerOnly => {
-                (None, executor.execute_inner(&execution, &sources)?)
-            }
-        };
-        let mut material = crate::opaque::CpuCommitmentMaterial::from_state(state, &execution, 1)?;
-        let successor = self.next_level_binding(parent.clone())?;
-        material.bind(successor.clone());
-        material.bind_commitment(successor.operation_id(), public.clone());
-        let binding = match (public, plan.binding()) {
-            (Some(public), akita_params::NextWitnessBindingPolicy::OuterPayload) => {
-                crate::opaque::NextWitnessBindingMessage::OuterPayload(public)
-            }
-            (None, akita_params::NextWitnessBindingPolicy::TerminalInnerState) => {
-                crate::opaque::NextWitnessBindingMessage::TerminalInnerState(
-                    crate::opaque::TerminalCommitmentMaterialKernel::terminal_message(
-                        self, &material,
-                    )?,
-                )
-            }
-            _ => {
-                return Err(AkitaError::Internal(
-                    "witness commitment payload differs from the next witness binding policy"
-                        .into(),
-                ))
-            }
-        };
-        // One lineage identifies the next committed witness and its material.
-        witness.set_operation_binding(parent.for_operation(successor.operation_id()));
-        witness.pending_successor = Some(successor.fold_level());
-        Ok(crate::opaque::WitnessCommitmentOutput::new(
-            binding, witness, material,
-        ))
+        result
     }
     fn advance_witness_level(&self, witness: &mut Self::WitnessHandle) -> Result<(), AkitaError> {
-        let parent = witness.operation_binding();
-        self.validate_binding(&parent)?;
-        let next = parent.fold_level().checked_add(1).ok_or_else(|| {
-            AkitaError::Internal("admitted witness successor fold level overflow".into())
-        })?;
-        if witness.pending_successor != Some(next) {
-            return Err(AkitaError::InvalidInput(
-                "witness level transition requires its successor commitment".into(),
-            ));
-        }
-        let binding = parent
-            .for_level_operation(next, parent.operation_id())
-            .with_group(None);
-        self.validate_binding(&binding)?;
-        witness.set_operation_binding(binding);
-        witness.pending_successor = None;
-        Ok(())
+        self.advance_ordinary_witness_level(witness)
     }
 }

@@ -115,7 +115,7 @@ pub(crate) fn materialize_coefficient_packing_d_input<
         OpeningMethod::SubringCoefficientPacking {
             challenge_subring_dimension,
         } => challenge_subring_dimension,
-        OpeningMethod::EvaluationTrace => {
+        OpeningMethod::EvaluationTrace | OpeningMethod::FullRingScalarExtension { .. } => {
             return Err(AkitaError::Internal(
                 "coefficient-packing D input requires the coefficient-packing method".into(),
             ));

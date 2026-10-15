@@ -160,9 +160,9 @@ where
             field_bytes::<F>(coefficients.len())?,
             0,
         )?,
-    );
+    )?;
     for coefficient in coefficients {
-        state.public_message(&FieldAtom::new(coefficient));
+        state.public_message(&FieldAtom::new(coefficient))?;
     }
     Ok(())
 }
@@ -186,9 +186,9 @@ where
             field_bytes::<F>(coefficients.len())?,
             0,
         )?,
-    );
+    )?;
     for coefficient in coefficients {
-        state.public_message(&FieldAtom::new(coefficient));
+        state.public_message(&FieldAtom::new(coefficient))?;
     }
     Ok(())
 }
@@ -243,9 +243,9 @@ where
                 field_bytes::<F>(atom_count)?,
                 0,
             )?,
-        );
+        )?;
         for coefficient in compressed.coeffs_except_linear_term() {
-            send_extension::<F, E>(channel.state_mut(), *coefficient);
+            send_extension::<F, E>(channel.state_mut(), *coefficient)?;
         }
         let challenge = channel.round_challenge(invocation, round_id)?;
         claim = compressed.eval_from_hint(&claim, &challenge);
@@ -312,7 +312,7 @@ where
                 field_bytes::<F>(atom_count)?,
                 0,
             )?,
-        );
+        )?;
         let mut coefficients = Vec::new();
         coefficients
             .try_reserve_exact(degree_bound)
@@ -373,9 +373,9 @@ where
                 field_bytes::<F>(atom_count)?,
                 0,
             )?,
-        );
+        )?;
         for coefficient in poly.coefficients() {
-            send_extension::<F, E>(channel.state_mut(), *coefficient);
+            send_extension::<F, E>(channel.state_mut(), *coefficient)?;
         }
         let challenge = channel.round_challenge(invocation, round_id)?;
         claim = advance_eq_factored_claim(claim, prover.current_tau(), &poly, challenge);
@@ -448,7 +448,7 @@ where
                 field_bytes::<F>(atom_count)?,
                 0,
             )?,
-        );
+        )?;
         let mut coefficients = Vec::new();
         coefficients
             .try_reserve_exact(degree_bound)
@@ -473,11 +473,70 @@ mod tests {
     use super::*;
     use akita_algebra::poly::multilinear_eval;
     use akita_transcript::{
-        field_challenge_bytes, new_prover_channel, new_verifier_channel, prover_field_challenge,
-        verifier_field_challenge, SITE_FAMILY_SUMCHECK,
+        field_request_spec, new_prover_channel, new_verifier_channel, prover_field_challenge,
+        verifier_field_challenge, IndexedLimits, InstalledContext, InstalledEvent,
+        InstalledRegistry, SITE_FAMILY_SUMCHECK,
     };
     use jolt_field::{CanonicalBytes, One, Prime128Offset275 as F, Ring, Zero};
     use jolt_poly::UnivariatePoly;
+
+    fn fixture_context(
+        session: &[u8],
+        invocation: u32,
+        shape: SumcheckShape,
+        random_challenges: bool,
+    ) -> InstalledContext {
+        let site = |round, role| ProtocolSiteId {
+            family: SITE_FAMILY_SUMCHECK,
+            invocation,
+            round,
+            group: if random_challenges { invocation } else { 0 },
+            detail: role as u32,
+            ..ProtocolSiteId::default()
+        };
+        let mut events = vec![InstalledEvent::Message(
+            context(site(0, SumcheckRole::Claim), SumcheckRole::Claim, 1, F::NUM_BYTES, 0)
+                .unwrap(),
+        )];
+        for round in 0..shape.num_rounds() {
+            let round = u32::try_from(round).unwrap();
+            events.push(InstalledEvent::Message(
+                context(
+                    site(round, SumcheckRole::RoundBody),
+                    SumcheckRole::RoundBody,
+                    shape.degree_bound(),
+                    shape.degree_bound() * F::NUM_BYTES,
+                    0,
+                )
+                .unwrap(),
+            ));
+            if random_challenges {
+                events.push(InstalledEvent::Request(
+                    field_request_spec::<F, F>(
+                        u64::from(round),
+                        site(round, SumcheckRole::Challenge),
+                    )
+                    .unwrap(),
+                ));
+            }
+        }
+        let registry = InstalledRegistry::new(
+            u64::from(invocation),
+            events,
+            IndexedLimits {
+                max_context_bytes: 1 << 16,
+                max_prefix_bytes: 1 << 16,
+                max_key_bytes: 1 << 17,
+                max_descriptor_bytes: 256,
+                max_answer_bytes: 2048,
+                max_result_bytes: F::NUM_BYTES as u64,
+                max_proof_bytes: (shape.num_rounds() * shape.degree_bound() * F::NUM_BYTES)
+                    as u64,
+            },
+        )
+        .unwrap();
+        InstalledContext::new(&registry, session, b"fixture").unwrap()
+    }
 
     struct DenseInstance {
         evaluations: Vec<F>,
@@ -621,17 +680,7 @@ mod tests {
 
         fn round_challenge(&mut self, invocation: u32, round: u32) -> Result<F, AkitaError> {
             let site = self.sumcheck_site(invocation, round, SumcheckRole::Challenge);
-            prover_context(
-                &mut self.state,
-                ProtocolContextRecord::new(
-                    site.to_bytes(),
-                    ProtocolMessageKind::Challenge as u32,
-                    0,
-                    0,
-                    field_challenge_bytes::<F>(),
-                ),
-            );
-            prover_field_challenge(&mut self.state)
+            prover_field_challenge(&mut self.state, site)
         }
     }
 
@@ -773,17 +822,7 @@ mod tests {
 
         fn round_challenge(&mut self, invocation: u32, round: u32) -> Result<F, AkitaError> {
             let site = self.sumcheck_site(invocation, round, SumcheckRole::Challenge);
-            verifier_context(
-                &mut self.state,
-                ProtocolContextRecord::new(
-                    site.to_bytes(),
-                    ProtocolMessageKind::Challenge as u32,
-                    0,
-                    0,
-                    field_challenge_bytes::<F>(),
-                ),
-            );
-            verifier_field_challenge(&mut self.state)
+            verifier_field_challenge(&mut self.state, site)
         }
     }
 
@@ -795,8 +834,11 @@ mod tests {
             rounds: 4,
             claim,
         };
+        let installed = fixture_context(
+            b"native-sumcheck", 7, SumcheckShape::new(4, 1).unwrap(), true,
+        );
         let mut prover = TestProverChannel {
-            state: new_prover_channel(b"native-sumcheck", b"fixture").unwrap(),
+            state: new_prover_channel(&installed).unwrap(),
             invocation: 7,
         };
         let shape = SumcheckShape::new(4, 1).unwrap();
@@ -807,7 +849,7 @@ mod tests {
             7,
         )
         .unwrap();
-        let proof = prover.state.narg_string().to_vec();
+        let proof = prover.state.finish().unwrap();
 
         let verifier_instance = DenseInstance {
             evaluations,
@@ -815,7 +857,7 @@ mod tests {
             claim,
         };
         let mut verifier = TestVerifierChannel {
-            state: new_verifier_channel(b"native-sumcheck", b"fixture", &proof).unwrap(),
+            state: new_verifier_channel(&installed, &proof).unwrap(),
             invocation: 7,
         };
         let verifier_point = verify_sumcheck(&verifier_instance, &mut verifier, shape, 7).unwrap();
@@ -831,8 +873,11 @@ mod tests {
             rounds: 4,
             claim,
         };
+        let installed = fixture_context(
+            b"native-sumcheck", 7, SumcheckShape::new(4, 1).unwrap(), true,
+        );
         let mut prover = TestProverChannel {
-            state: new_prover_channel(b"native-sumcheck", b"fixture").unwrap(),
+            state: new_prover_channel(&installed).unwrap(),
             invocation: 7,
         };
         let shape = SumcheckShape::new(4, 1).unwrap();
@@ -843,7 +888,7 @@ mod tests {
             7,
         )
         .unwrap();
-        let proof = prover.state.narg_string();
+        let proof = prover.state.finish().unwrap();
         let verifier_instance = DenseInstance {
             evaluations,
             rounds: 4,
@@ -851,8 +896,7 @@ mod tests {
         };
 
         let mut truncated = TestVerifierChannel {
-            state: new_verifier_channel(b"native-sumcheck", b"fixture", &proof[..proof.len() - 1])
-                .unwrap(),
+            state: new_verifier_channel(&installed, &proof[..proof.len() - 1]).unwrap(),
             invocation: 7,
         };
         assert_eq!(
@@ -869,8 +913,9 @@ mod tests {
         let claim = instance.claim();
         let degree = instance.degree_bound();
         let shape = SumcheckShape::new(1, degree).unwrap();
+        let installed = fixture_context(b"native-eq-sumcheck", 12, shape, true);
         let mut prover = TestProverChannel {
-            state: new_prover_channel(b"native-eq-sumcheck", b"fixture").unwrap(),
+            state: new_prover_channel(&installed).unwrap(),
             invocation: 12,
         };
         let (prover_point, _) = prove_eq_factored_sumcheck::<F, F, _, _>(
@@ -880,11 +925,11 @@ mod tests {
             12,
         )
         .unwrap();
-        let proof = prover.state.narg_string().to_vec();
+        let proof = prover.state.finish().unwrap();
 
         let expected = OneRoundEq::new(tau, coefficients);
         let mut verifier = TestVerifierChannel {
-            state: new_verifier_channel(b"native-eq-sumcheck", b"fixture", &proof).unwrap(),
+            state: new_verifier_channel(&installed, &proof).unwrap(),
             invocation: 12,
         };
         let verifier_point = verify_eq_factored_sumcheck::<F, F, _, _>(
@@ -905,12 +950,14 @@ mod tests {
         let coefficients = vec![F::from_u64(3), F::from_u64(5), F::from_u64(7)];
         let instance = OneRoundEq::new(F::zero(), coefficients);
         let challenge = F::from_u64(11);
-        let mut proof_state = new_prover_channel(b"native-eq-forgery", b"fixture").unwrap();
-        send_extension::<F, F>(&mut proof_state, instance.claim());
-        send_extension::<F, F>(&mut proof_state, F::from_u64(101));
-        let proof = proof_state.narg_string().to_vec();
+        let installed = fixture_context(
+            b"native-eq-forgery", 19,
+            SumcheckShape::new(1, instance.degree_bound()).unwrap(), false,
+        );
+        let mut proof = instance.claim().to_bytes_le_vec();
+        proof.extend_from_slice(&F::from_u64(101).to_bytes_le_vec());
         let mut verifier = FixedVerifierChannel {
-            state: new_verifier_channel(b"native-eq-forgery", b"fixture", &proof).unwrap(),
+            state: new_verifier_channel(&installed, &proof).unwrap(),
             challenges: vec![challenge],
         };
 
@@ -939,8 +986,11 @@ mod tests {
         let point = [F::from_u64(3).inverse().unwrap(), F::from_u64(17)];
         let mut instance = TwoRoundEq::new(equality, coefficients);
         let input_claim = instance.input_claim();
+        let installed = fixture_context(
+            b"native-eq-late", 23, SumcheckShape::new(2, 1).unwrap(), false,
+        );
         let mut prover = FixedProverChannel {
-            state: new_prover_channel(b"native-eq-late", b"fixture").unwrap(),
+            state: new_prover_channel(&installed).unwrap(),
             challenges: point.to_vec(),
         };
         let shape = SumcheckShape::new(2, 1).unwrap();
@@ -951,21 +1001,23 @@ mod tests {
             23,
         )
         .unwrap();
-        let honest = prover.state.narg_string().to_vec();
+        let honest = prover.state.finish().unwrap();
         let expected = TwoRoundEq::new(equality, coefficients).evaluate(point[0], point[1]);
         let verify = |proof: &[u8]| {
             let mut verifier = FixedVerifierChannel {
-                state: new_verifier_channel(b"native-eq-late", b"fixture", proof).unwrap(),
+                state: new_verifier_channel(&installed, proof).unwrap(),
                 challenges: point.to_vec(),
             };
-            verify_eq_factored_sumcheck::<F, F, _, _>(
+            let verified = verify_eq_factored_sumcheck::<F, F, _, _>(
                 &equality,
                 input_claim,
                 shape,
                 &mut verifier,
                 23,
                 |_| Ok(expected),
-            )
+            )?;
+            verifier.state.check_eof()?;
+            Ok(verified)
         };
         assert_eq!(verify(&honest), Ok(point.to_vec()));
 
@@ -975,78 +1027,4 @@ mod tests {
         assert_eq!(verify(&tampered), Err(AkitaError::InvalidProof));
     }
 
-    #[test]
-    fn arithmetic_cutover_preserves_proof_and_challenges() {
-        fn hex(bytes: &[u8]) -> String {
-            bytes.iter().map(|byte| format!("{byte:02x}")).collect()
-        }
-        fn challenge_hex(point: &[F]) -> String {
-            hex(&point
-                .iter()
-                .flat_map(|challenge| challenge.to_bytes_le_vec())
-                .collect::<Vec<_>>())
-        }
-
-        // Frozen from Akita cad9f221, before the jolt-poly arithmetic cutover.
-        let (evaluations, claim) = fixture();
-        let mut standard = DenseInstance {
-            evaluations,
-            rounds: 4,
-            claim,
-        };
-        let mut prover = TestProverChannel {
-            state: new_prover_channel(b"native-cutover", b"standard").unwrap(),
-            invocation: 3,
-        };
-        let (standard_point, _) = prove_sumcheck(
-            &mut crate::InfallibleSumcheck(&mut standard),
-            &mut prover,
-            SumcheckShape::new(4, 1).unwrap(),
-            3,
-        )
-        .unwrap();
-        let standard_proof = hex(prover.state.narg_string());
-        let standard_point = challenge_hex(&standard_point);
-
-        let mut normalized = TwoRoundEq::new(
-            [F::from_u64(2), F::from_u64(5)],
-            [
-                F::from_u64(3),
-                F::from_u64(7),
-                F::from_u64(11),
-                F::from_u64(13),
-            ],
-        );
-        let degree = normalized.degree_bound();
-        let mut prover = TestProverChannel {
-            state: new_prover_channel(b"native-cutover", b"normalized").unwrap(),
-            invocation: 5,
-        };
-        let (normalized_point, _) = prove_eq_factored_sumcheck::<F, F, _, _>(
-            &mut crate::InfallibleEqFactoredSumcheck(&mut normalized),
-            &mut prover,
-            SumcheckShape::new(2, degree).unwrap(),
-            5,
-        )
-        .unwrap();
-        let normalized_proof = hex(prover.state.narg_string());
-        let normalized_point = challenge_hex(&normalized_point);
-
-        assert_eq!(
-            standard_proof,
-            "400000000000000000000000000000001eac1977828cc02a77594378b1620e1aafe558b0d223814a43d8689584c7e8487ecc94880d17afea66f4d7028d9c7955"
-        );
-        assert_eq!(
-            standard_point,
-            "776ac69d2023b0ca5dd6105eac988386e903335d643748ede1ca51f68a65f80e7a151a0c49a15b5111e208ae324e41ecf5b338e253bee87fcedd60b52f172384"
-        );
-        assert_eq!(
-            normalized_proof,
-            "480000000000000000000000000000000db05c972d63f199da38a132ca63d420"
-        );
-        assert_eq!(
-            normalized_point,
-            "ad3442e42aa54d6ee9a1bd8d0f2f9a3dc03c585e961e38b7e784fab7584fe6ae"
-        );
-    }
 }

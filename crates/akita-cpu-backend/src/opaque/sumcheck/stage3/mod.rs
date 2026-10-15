@@ -85,7 +85,7 @@ where
                 "Stage 3 parameters differ from the admitted proof".into(),
             ));
         }
-        let expanded = Arc::clone(&self.prepared()?.expanded);
+        let expanded = Arc::clone(self.prepared()?.shared_expanded()?);
         let setup_coefficient_bits = request
             .address_geometry
             .relation_coefficient_variable_count();

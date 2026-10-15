@@ -12,6 +12,10 @@ enum OpaquePreparedGroupOpeningKind<F: Field, E: Field> {
         point: akita_types::PreparedSubringCoefficientPackingPoint<E>,
         partials_by_claim: Vec<crate::opaque::SubringCoefficientPackingPartials<F>>,
     },
+    FullRing {
+        point: akita_types::full_ring::FullRingRawPoint<E>,
+        partials: akita_types::full_ring::FullRingPartials<F>,
+    },
 }
 
 /// Consumer-private prepared opening state. Its witness-derived rows never
@@ -96,6 +100,23 @@ where
         }
     }
 
+    pub(in crate::opaque) fn full_ring(
+        binding: crate::opaque::OperationBinding,
+        source: crate::opaque::openings::PreparedOpeningSource<F, E>,
+        point: akita_types::full_ring::FullRingRawPoint<E>,
+        partials: akita_types::full_ring::FullRingPartials<F>,
+        scalar_openings: Vec<E>,
+    ) -> Self {
+        Self {
+            binding,
+            source,
+            scalar_openings,
+            kind: OpaquePreparedGroupOpeningKind::FullRing { point, partials },
+            #[cfg(feature = "response-model-diagnostics")]
+            source_l2_sq: None,
+        }
+    }
+
     pub(in crate::opaque) fn into_terminal_evaluation_rows(
         self,
     ) -> Result<Vec<akita_types::RingVec<F>>, AkitaError> {
@@ -103,9 +124,12 @@ where
             OpaquePreparedGroupOpeningKind::EvaluationTrace {
                 folded_by_claim, ..
             } => Ok(folded_by_claim),
-            OpaquePreparedGroupOpeningKind::CoefficientPacking { .. } => Err(AkitaError::Internal(
-                "terminal-native opening unexpectedly uses coefficient packing".into(),
-            )),
+            OpaquePreparedGroupOpeningKind::FullRing { .. }
+            | OpaquePreparedGroupOpeningKind::CoefficientPacking { .. } => {
+                Err(AkitaError::Internal(
+                    "terminal-native opening unexpectedly uses coefficient packing".into(),
+                ))
+            }
         }
     }
 
@@ -115,6 +139,43 @@ where
 
     pub(crate) fn operation_binding(&self) -> crate::opaque::OperationBinding {
         self.binding.clone()
+    }
+
+    pub(crate) fn full_ring_public(
+        &self,
+    ) -> Result<
+        (
+            akita_types::full_ring::FullRingRawPoint<E>,
+            E,
+            akita_types::FullRingSourceId,
+        ),
+        AkitaError,
+    > {
+        let OpaquePreparedGroupOpeningKind::FullRing { point, .. } = &self.kind else {
+            return Err(AkitaError::InvalidInput(
+                "selected relation requires full-ring opening".into(),
+            ));
+        };
+        let [value] = self.scalar_openings.as_slice() else {
+            return Err(AkitaError::InvalidInput(
+                "full-ring handle has exactly one scalar row".into(),
+            ));
+        };
+        let source_id = match self.source()? {
+            crate::opaque::openings::RetainedOpeningSource::Commitment(source) => source
+                .source
+                .full_ring()
+                .ok_or_else(|| AkitaError::InvalidInput("missing native source capability".into()))?
+                .source_id(),
+            crate::opaque::openings::RetainedOpeningSource::Witness(witness) => {
+                witness.full_ring_source_id.ok_or_else(|| {
+                    AkitaError::InvalidInput(
+                        "terminal A-only witness has no recursive source role".into(),
+                    )
+                })?
+            }
+        };
+        Ok((point.clone(), *value, source_id))
     }
 
     pub(crate) fn relation_opening<const D: usize>(
@@ -141,6 +202,7 @@ where
                 folded_by_claim,
             } => {
                 if group.opening_method() != akita_params::OpeningMethod::EvaluationTrace
+                    || group.source_view() != akita_params::SourceOpeningView::Decoded
                     || point.ring_multiplier_point.position_len() != group.num_positions_per_block()
                     || point.ring_multiplier_point.fold_len() != group.num_live_blocks()
                     || folded_by_claim.len()
@@ -168,6 +230,10 @@ where
                 if point.num_positions_per_block() != group.num_positions_per_block()
                     || point.num_live_blocks() != group.num_live_blocks()
                     || geometry.group_opening_method(group_index)? != group.opening_method()
+                    || point.source_view() != group.source_view()
+                    || point.source_view() != opening_batch.group_view(group_index)?
+                    || point.source_num_vars() != opening_batch.group_layout(group_index)?.num_vars()
+                    || point.point_num_vars() != opening_batch.group_point_num_vars(group_index)?
                 {
                     return Err(AkitaError::InvalidInput(
                         "batched prover coefficient-packing point layout mismatch".into(),
@@ -185,6 +251,33 @@ where
                     akita_types::OpeningFamily::SubringCoefficientPacking(point.clone()),
                 ))
             }
+            OpaquePreparedGroupOpeningKind::FullRing { point, partials } => {
+                let view = point.view();
+                if !group.opening_method().is_full_ring_scalar_extension()
+                    || group.source_view() != akita_params::SourceOpeningView::Decoded
+                    || view.degree() != group_dims.d_a()
+                    || view.positions() != group.num_positions_per_block()
+                    || view.blocks() != group.num_live_blocks()
+                    || view.digits() != group.num_digits_inner()
+                    || view.polynomials()
+                        != opening_batch.group_layout(group_index)?.num_polynomials()
+                    || group_dims.d_d() != 128
+                    || D != 128
+                {
+                    return Err(AkitaError::InvalidInput(
+                        "full-ring retained opening geometry mismatch".into(),
+                    ));
+                }
+                let opening = crate::opaque::PreparedOpeningWitness::full_ring::<D>(
+                    partials.clone(),
+                    group.num_digits_open(),
+                    group.log_basis_open(),
+                )?;
+                Ok((
+                    opening,
+                    akita_types::OpeningFamily::FullRingScalarExtension(point.clone()),
+                ))
+            }
         }
     }
 }
@@ -197,6 +290,8 @@ pub(crate) struct RecursiveWitnessFlat {
     pub(super) live_coeff_len: usize,
     pub(super) committed_coeff_len: Option<usize>,
     pub(super) commitment_ring_dim: Option<usize>,
+    /// Selected full-ring A extent, distinct from stored/live Eq109 digits.
+    pub(super) full_ring_extent: Option<usize>,
 }
 
 /// Opaque CPU-consumer handle for a complete recursive witness.
@@ -206,6 +301,8 @@ pub(crate) struct RecursiveWitnessFlat {
 /// recursive-witness adapter.
 pub struct CpuWitnessHandle {
     pub(crate) pending_successor: Option<u32>,
+    pub(crate) full_ring_context: Option<Arc<dyn std::any::Any + Send + Sync>>,
+    pub(crate) full_ring_source_id: Option<akita_types::FullRingSourceId>,
     pub(in crate::opaque::recursive) relation_plan:
         Option<Arc<akita_types::RelationRangeImagePlan>>,
     pub(in crate::opaque::recursive) manifest: crate::opaque::RecursiveWitnessManifest,
@@ -220,12 +317,59 @@ impl CpuWitnessHandle {
     pub(crate) fn snapshot(&self) -> Self {
         Self {
             pending_successor: self.pending_successor,
+            full_ring_context: self.full_ring_context.clone(),
+            full_ring_source_id: self.full_ring_source_id,
             relation_plan: self.relation_plan.clone(),
             manifest: self.manifest,
             binding: self.binding.clone(),
             logical: self.logical.clone(),
             committed: self.committed.clone(),
         }
+    }
+
+    pub(crate) fn retain_full_ring_extent(&mut self) -> Result<(), AkitaError> {
+        if self.committed.is_some() || self.manifest.commitment_ring_dimension() != 128 {
+            return Err(AkitaError::InvalidInput(
+                "full-ring source requires canonical degree-128 storage".into(),
+            ));
+        }
+        self.logical
+            .retain_full_ring_extent(self.manifest.commitment_domain_len())
+    }
+
+    pub(crate) fn validate_full_ring_extent(&self) -> Result<(), AkitaError> {
+        if self.committed.is_some()
+            || self.logical.full_ring_extent != Some(self.manifest.commitment_domain_len())
+            || self.manifest.commitment_ring_dimension() != 128
+        {
+            return Err(AkitaError::InvalidInput(
+                "full-ring witness extent differs from its manifest".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn full_ring_signed_coefficient(&self, index: usize) -> Result<i8, AkitaError> {
+        self.validate_full_ring_extent()?;
+        if self.committed.is_some() || index >= self.manifest.commitment_domain_len() {
+            return Err(AkitaError::InvalidInput(
+                "full-ring integer reader requires canonical in-domain witness".into(),
+            ));
+        }
+        Ok(self.logical.packed_digits().get(index).unwrap_or(0))
+    }
+
+    pub(crate) fn full_ring_partials<F, E>(
+        &self,
+        plan: &crate::opaque::CommitInnerPlan,
+        point: &akita_types::full_ring::FullRingRawPoint<E>,
+    ) -> Result<akita_types::full_ring::FullRingPartials<F>, AkitaError>
+    where
+        F: Field + CanonicalEncoding,
+        E: jolt_field::ExtField<F>,
+    {
+        self.validate_full_ring_extent()?;
+        crate::opaque::full_ring::source_partials(std::slice::from_ref(&self.logical), plan, point)
     }
 
     #[cfg(feature = "response-model-diagnostics")]
@@ -369,5 +513,19 @@ where
             column_bits,
             coefficient_bits,
         ))
+    }
+}
+
+impl<F: Field> akita_types::full_ring::FullRingCoefficientSource<F> for CpuWitnessHandle {
+    fn len(&self) -> usize {
+        self.manifest.commitment_domain_len()
+    }
+    fn coefficient(&self, index: usize) -> Result<F, AkitaError> {
+        let digit = self.full_ring_signed_coefficient(index)?;
+        Ok(if digit < 0 {
+            -F::from_u64(u64::from(digit.unsigned_abs()))
+        } else {
+            F::from_u64(digit as u64)
+        })
     }
 }

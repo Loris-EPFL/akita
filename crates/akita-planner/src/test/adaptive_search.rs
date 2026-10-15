@@ -367,6 +367,7 @@ fn proof_first_uniform_search_matches_oracle_and_replans_query_fallback() {
             relation_traversal_order: RelationTraversalOrder::Canonical,
             relation_mode_filter: RelationModeFilter::All,
             root_main_constraint: None,
+            root_final_profile: None,
             adaptation_guide: None,
             query_prefix_count: akita_params::TRANSCRIPT_GRINDING_QUERY_LIMIT - query_count,
         },

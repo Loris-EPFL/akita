@@ -116,9 +116,20 @@ impl NttPrefixRequirement {
     }
 }
 
+/// Installed matrix namespace attached to a prepared transform.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct InstalledMatrixIdentity {
+    /// Authenticated installation selector; not a derivation seed.
+    pub installation: [u8; 32],
+    /// Original role retained through execution.
+    pub role: crate::FullRingMatrixRole,
+}
+
 /// Identifies one prepared NTT prefix at a concrete ring degree and domain.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct NttCacheKey {
+    /// Installed role identity; `None` belongs only to the legacy prefix family.
+    pub matrix: Option<InstalledMatrixIdentity>,
     /// Ring dimension `D` for the cached transform family.
     pub ring_d: usize,
     /// Number of ring elements in the cached matrix view at `ring_d`.
@@ -132,6 +143,7 @@ impl NttCacheKey {
     #[must_use]
     pub const fn new(requirement: NttPrefixRequirement, domain: NttTransformDomain) -> Self {
         Self {
+            matrix: None,
             ring_d: requirement.ring_dimension,
             num_ring_elements: requirement.num_ring_elements,
             domain,
@@ -153,12 +165,14 @@ impl NttCacheKey {
 
     /// Join covering prefixes that share a ring dimension and transform domain.
     pub fn join(self, other: Self) -> Result<Self, AkitaError> {
-        if self.ring_d != other.ring_d || self.domain != other.domain {
+        if self.matrix != other.matrix || self.ring_d != other.ring_d || self.domain != other.domain
+        {
             return Err(AkitaError::InvalidSetup(
                 "cannot join NTT cache keys with different dimensions or domains".into(),
             ));
         }
         Ok(Self {
+            matrix: self.matrix,
             ring_d: self.ring_d,
             num_ring_elements: self.num_ring_elements.max(other.num_ring_elements),
             domain: self.domain,

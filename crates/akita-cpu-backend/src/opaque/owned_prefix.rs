@@ -31,7 +31,7 @@ impl<F: Field + CanonicalEncoding + 'static, E> CpuBackend<F, E> {
     ) -> Result<Arc<OwnedPolynomials<DensePoly<F>>>, AkitaError> {
         let prepared = self.prepared()?;
         let coefficients = prepared
-            .expanded
+            .expanded()?
             .shared_matrix()
             .as_field_slice()
             .get(..id.n_prefix()?)
@@ -61,17 +61,17 @@ impl<F: Field + CanonicalEncoding + 'static, E> CpuBackend<F, E> {
     {
         let prepared = self.prepared()?;
         let validated =
-            crate::setup::setup_prefix::validate_setup_prefix_commitment(&prepared.expanded, id)?;
+            crate::setup::setup_prefix::validate_setup_prefix_commitment(prepared.expanded()?, id)?;
         self.memoized_setup_prefix(id, || {
             let executor = CommitmentExecutor::cpu(
                 self,
                 prepared,
-                &prepared.expanded,
+                prepared.expanded()?,
                 vec![PolynomialType::Dense(DenseType::Coefficients)],
                 PortableStatePolicy,
             )?;
             let artifact = crate::setup::setup_prefix::commit_validated_setup_prefix(
-                &prepared.expanded,
+                prepared.expanded()?,
                 &executor,
                 validated,
             )?;
@@ -89,7 +89,7 @@ impl<F: Field + CanonicalEncoding + 'static, E> CpuBackend<F, E> {
     ) -> Result<Arc<CachedSetupPrefix<F>>, AkitaError> {
         let prepared = self.prepared()?;
         crate::setup::setup_prefix::validate_setup_prefix_commitment(
-            &prepared.expanded,
+            prepared.expanded()?,
             &artifact.id,
         )?;
         self.memoized_setup_prefix(&artifact.id, || {
@@ -110,7 +110,7 @@ impl<F: Field + CanonicalEncoding + 'static, E> CpuBackend<F, E> {
     {
         let prepared = self.prepared()?;
         let mut artifacts = crate::commitment::SetupPrefixProverRegistry::new(
-            prepared.expanded.descriptor().setup_seed.clone(),
+            prepared.expanded()?.descriptor().setup_seed.clone(),
         );
         for id in ids {
             let mut artifact = self.setup_prefix_material(id)?.artifact.clone();
@@ -219,7 +219,7 @@ where
         required_ids: &[SetupPrefixSlotId],
     ) -> Result<SetupPrefixProverRegistry<F, CommitmentHandle<F, E>>, AkitaError> {
         let prepared = self.prepared()?;
-        if artifacts.setup_seed() != &prepared.expanded.descriptor().setup_seed {
+        if artifacts.setup_seed() != &prepared.expanded()?.descriptor().setup_seed {
             return Err(AkitaError::InvalidSetup(
                 "setup prefix artifacts belong to another setup".into(),
             ));

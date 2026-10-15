@@ -14,7 +14,7 @@ use akita_params::{
     dyadic_block_ranges, CommittedGroupParams, InnerCommitSecurityRoute, OpeningClaimsLayout,
     TerminalFoldParams, TerminalResponseShape, FOLD_RESPONSE_ATTEMPTS,
 };
-use akita_types::draw_group_fold_challenges;
+use akita_types::{group_fold_challenges_from_level, plan_group_fold_challenges};
 use akita_types::GrindingReplay;
 use akita_types::GroupFoldChallenges;
 #[cfg(test)]
@@ -105,21 +105,25 @@ where
     } else {
         None
     };
+    let shell_descriptor = akita_challenges::ShellLevelDescriptor::new(vec![
+        akita_challenges::ShellGroupDescriptor::new(
+            akita_challenges::FoldChallengeDrawDomain::EvaluationTrace,
+            params.d_a(),
+            0,
+            params.blocks.live_blocks,
+            1,
+            *sparse,
+            operator_rejection,
+        )?,
+    ])?;
     let point_indices = [0usize];
     let site = akita_params::GrindingSite::FoldResponse { level };
-    let (nonce, (fold_handle, challenges, encoding, diagnostics)) =
+    let (nonce, (fold_handle, preview_shell, encoding, diagnostics)) =
         first_jointly_accepted_nonce(FOLD_RESPONSE_ATTEMPTS, |nonce| {
             let mut preview_state = grinding.preview_fold_response(site, nonce)?;
-            let mut preview = PreviewFoldDraw::new(&mut preview_state);
-            let challenges = preview.draw_folding_challenges_with_rejection(
-                akita_challenges::FoldChallengeDrawDomain::EvaluationTrace,
-                params.d_a(),
-                0,
-                params.blocks.live_blocks,
-                1,
-                sparse,
-                operator_rejection,
-            )?;
+            let mut preview = PreviewFoldDraw::new(&mut preview_state, level);
+            let shell = preview.draw_shell_level(&shell_descriptor)?;
+            let challenges = shell.group(0)?.challenges();
             let selected = challenges.select_claims(&point_indices)?;
             let plan = ValidatedTerminalFoldProbePlan::new::<D>(
                 &selected,
@@ -141,24 +145,16 @@ where
                     diagnostics,
                 } => Ok(Some((
                     fold_handle,
-                    challenges,
+                    shell,
                     crate::backend::ValidatedTerminalZEncodingPlan::from_probe(&plan),
                     diagnostics,
                 ))),
             }
         })?;
     grinding.commit_fold_response(site, nonce)?;
-    let mut live = ProverFoldDraw::new(grinding.state_mut(), level, 0);
-    let live_challenges = live.draw_folding_challenges_with_rejection(
-        akita_challenges::FoldChallengeDrawDomain::EvaluationTrace,
-        params.d_a(),
-        0,
-        params.blocks.live_blocks,
-        1,
-        sparse,
-        operator_rejection,
-    )?;
-    if live_challenges != challenges {
+    let mut live = ProverFoldDraw::new(grinding.state_mut(), level);
+    let live_shell = live.draw_shell_level(&shell_descriptor)?;
+    if live_shell != preview_shell {
         return Err(AkitaError::Internal(
             "terminal grind preview did not match live transcript replay".into(),
         ));
@@ -247,20 +243,30 @@ where
         ));
     }
     let site = akita_params::GrindingSite::FoldResponse { level };
-    let (nonce, mut candidate_outputs) =
+    // Freeze the complete descriptor before any witness-dependent probe.
+    let plans = groups
+        .iter()
+        .map(|group| {
+            plan_group_fold_challenges::<F, E>(
+                &group.input.params,
+                group.input.group_index,
+                group.input.num_polynomials,
+            )
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let shell_descriptor = akita_challenges::ShellLevelDescriptor::new(
+        plans.iter().map(|plan| plan.descriptor().clone()).collect(),
+    )?;
+    let (nonce, (mut candidate_outputs, preview_shell)) =
         first_jointly_accepted_nonce(max_grind_attempts, |nonce| {
             let mut candidate_outputs = Vec::with_capacity(groups.len());
             {
                 let mut preview_state = grinding.preview_fold_response(site, nonce)?;
-                let mut preview = PreviewFoldDraw::new(&mut preview_state);
-                for prepared_group in groups {
+                let mut preview = PreviewFoldDraw::new(&mut preview_state, level);
+                let shell = preview.draw_shell_level(&shell_descriptor)?;
+                for (prepared_group, plan) in groups.iter().zip(&plans) {
                     let group = &prepared_group.input;
-                    let challenges = draw_group_fold_challenges::<F, E, _>(
-                        &mut preview,
-                        &group.params,
-                        group.group_index,
-                        group.num_polynomials,
-                    )?;
+                    let challenges = group_fold_challenges_from_level(plan, &shell)?;
                     let ranges = (root_lp.witness_chunk.num_chunks > 1)
                         .then(|| {
                             dyadic_block_ranges(
@@ -311,26 +317,27 @@ where
                     };
                     candidate_outputs.push(output);
                 }
+                Ok(Some((candidate_outputs, shell)))
             }
-            Ok(Some(candidate_outputs))
         })?;
 
     grinding.commit_fold_response(site, nonce)?;
     {
         let _span = tracing::info_span!("fold_grind_live_replay").entered();
-        for (prepared_group, output) in groups.iter().zip(candidate_outputs.iter_mut()) {
+        let mut live = ProverFoldDraw::new(grinding.state_mut(), level);
+        let live_shell = live.draw_shell_level(&shell_descriptor)?;
+        if live_shell != preview_shell {
+            return Err(AkitaError::Internal(
+                "fold grind preview did not match the complete live shell".into(),
+            ));
+        }
+        for ((prepared_group, output), plan) in groups
+            .iter()
+            .zip(candidate_outputs.iter_mut())
+            .zip(&plans)
+        {
             let group = &prepared_group.input;
-            let challenges = {
-                let group_index = u32::try_from(group.group_index)
-                    .map_err(|_| AkitaError::Internal("fold group index exceeds u32".into()))?;
-                let mut live = ProverFoldDraw::new(grinding.state_mut(), level, group_index);
-                draw_group_fold_challenges::<F, E, _>(
-                    &mut live,
-                    &group.params,
-                    group.group_index,
-                    group.num_polynomials,
-                )?
-            };
+            let challenges = group_fold_challenges_from_level(plan, &live_shell)?;
             if challenges != output.challenges {
                 return Err(AkitaError::Internal(
                     "fold grind preview did not match live transcript replay".to_string(),
@@ -486,17 +493,6 @@ mod tests {
 
     type F = jolt_field::Prime128Offset275;
 
-    #[derive(Default)]
-    struct FixedDraw {
-        draws: usize,
-    }
-
-    impl FoldDraw for FixedDraw {
-        fn absorb_and_squeeze(&mut self, _payload: &[u8]) -> Result<[u8; 32], AkitaError> {
-            self.draws += 1;
-            Ok([11; akita_transcript::FOLD_CHALLENGE_SEED_LEN])
-        }
-    }
 
     #[test]
     fn packing_draw_has_one_subring_value_and_derived_a_view() {
@@ -517,10 +513,13 @@ mod tests {
         params.own_group_mut().opening.fold_challenge_config =
             SparseChallengeConfig::production_for_ring_dim(64).unwrap();
 
-        let mut draw = FixedDraw::default();
-        let challenges =
-            draw_group_fold_challenges::<F, F, _>(&mut draw, &params.final_group(), 3, 2).unwrap();
-        assert_eq!(draw.draws, 1);
+        let plan = plan_group_fold_challenges::<F, F>(&params.final_group(), 0, 2).unwrap();
+        let descriptor = akita_challenges::ShellLevelDescriptor::new(vec![
+            plan.descriptor().clone(),
+        ]).unwrap();
+        let raw = vec![0; usize::try_from(descriptor.raw_len()).unwrap()];
+        let shell = akita_challenges::decode_shell_level_from_bytes(&descriptor, &raw).unwrap();
+        let challenges = group_fold_challenges_from_level(&plan, &shell).unwrap();
         let OpeningFamily::SubringCoefficientPacking(challenges) = challenges else {
             panic!("expected coefficient-packing challenges");
         };
@@ -565,12 +564,9 @@ mod tests {
             SparseChallengeConfig::pm1_only(1),
         ] {
             params.own_group_mut().opening.fold_challenge_config = config;
-            let mut draw = FixedDraw::default();
             assert!(
-                draw_group_fold_challenges::<F, F, _>(&mut draw, &params.final_group(), 0, 1)
-                    .is_err()
+                plan_group_fold_challenges::<F, F>(&params.final_group(), 0, 1).is_err()
             );
-            assert_eq!(draw.draws, 0);
         }
     }
 

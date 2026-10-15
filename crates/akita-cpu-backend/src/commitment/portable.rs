@@ -200,6 +200,29 @@ impl<F: Field> PortableCommitmentHandle<F> {
         self.outer_compression_witness(plan)
     }
 
+    /// Add ordinary quotient material without replacing the authenticated
+    /// native inner rows or packed compression path.
+    ///
+    /// The caller must derive these quotients from this exact path under the
+    /// authenticated setup; this constructor checks representation and shape.
+    pub(crate) fn with_quotient_lift(
+        &self,
+        plan: &CompressionChainPlan,
+        quotients: Vec<RingVec<F>>,
+    ) -> Result<Self, AkitaError> {
+        self.validate_shape()
+            .map_err(|error| AkitaError::InvalidInput(error.to_string()))?;
+        self.validate_outer_compression_mode(plan, RingRelationMode::ExactCoefficientRows)?;
+        let ordinary = Self {
+            inner_rows: self.inner_rows.clone(),
+            ring_dim: self.ring_dim,
+            outer_compression_stages: self.outer_compression_stages.clone(),
+            outer_compression_quotients: quotients,
+        };
+        ordinary.validate_outer_compression_mode(plan, RingRelationMode::QuotientLift)?;
+        Ok(ordinary)
+    }
+
     /// Recover the retained quotient rows under the derived compression plan.
     pub(crate) fn outer_compression_quotients(
         &self,
@@ -264,7 +287,7 @@ impl<F: Field> PortableCommitmentHandle<F> {
                     }
                 }
             }
-            RingRelationMode::ReducedEvaluation => {
+            RingRelationMode::ReducedEvaluation | RingRelationMode::ExactCoefficientRows => {
                 if !self.outer_compression_quotients.is_empty() {
                     return Err(AkitaError::InvalidInput(
                         "reduced commitment hint must not retain compression quotient rows".into(),
@@ -802,5 +825,45 @@ mod tests {
             witness
         );
         assert!(decoded.outer_compression_quotients(&plan).is_err());
+        let quotients = plan
+            .maps()
+            .iter()
+            .map(|map| {
+                RingVec::from_coeffs_with_ring_dim(
+                    vec![F::zero(); map.output_coefficients()],
+                    map.ring_dimension(),
+                )
+                .unwrap()
+            })
+            .collect::<Vec<_>>();
+        let ordinary = hint.with_quotient_lift(&plan, quotients.clone()).unwrap();
+        assert_eq!(ordinary.inner_rows(), hint.inner_rows());
+        assert_eq!(ordinary.ring_dim(), hint.ring_dim());
+        assert_eq!(
+            ordinary.outer_compression_stages,
+            hint.outer_compression_stages
+        );
+        assert_eq!(
+            ordinary.outer_compression_quotients(&plan).unwrap(),
+            quotients
+        );
+        hint.validate_outer_compression_mode(&plan, RingRelationMode::ExactCoefficientRows)
+            .unwrap();
+        assert_eq!(hint, decoded, "derivation must not alter native material");
+        assert!(ordinary
+            .validate_outer_compression_mode(&plan, RingRelationMode::ExactCoefficientRows)
+            .is_err());
+        assert!(ordinary.with_quotient_lift(&plan, quotients.clone()).is_err());
+        assert!(hint.with_quotient_lift(&plan, Vec::new()).is_err());
+        let mut malformed = hint.clone();
+        malformed.outer_compression_stages[0].pop();
+        assert!(malformed.with_quotient_lift(&plan, quotients.clone()).is_err());
+        let mut wrong_shape = quotients;
+        wrong_shape[0] = RingVec::from_coeffs_with_ring_dim(
+            wrong_shape[0].coeffs().to_vec(),
+            wrong_shape[0].ring_dim() / 2,
+        )
+        .unwrap();
+        assert!(hint.with_quotient_lift(&plan, wrong_shape).is_err());
     }
 }

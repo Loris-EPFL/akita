@@ -160,6 +160,7 @@ impl SetupPrefixCandidateContext<'_> {
             setup_natural_len: None,
             profile,
             opening: akita_params::GroupOpeningPlan {
+                source_view: akita_params::SourceOpeningView::Decoded,
                 opening_method: self.opening.method(),
                 fold_challenge_config: self.opening.challenge_config(),
                 log_basis_open: self.log_basis_open,

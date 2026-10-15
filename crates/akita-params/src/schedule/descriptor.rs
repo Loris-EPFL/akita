@@ -32,8 +32,8 @@ impl FoldSchedule {
                 "a fold schedule descriptor requires a root fold".to_string(),
             )
         })?;
-        // Schedule descriptor epoch for the unified group ownership format.
-        bytes.push(2);
+        // Schedule descriptor epoch for explicit source-opening views.
+        bytes.push(3);
         append_root_fold_descriptor_bytes(
             bytes,
             root.params,
@@ -67,8 +67,8 @@ impl FoldSchedule {
     }
 
     pub fn append_descriptor_bytes(&self, bytes: &mut Vec<u8>) {
-        // Schedule descriptor epoch for the unified group ownership format.
-        bytes.push(2);
+        // Schedule descriptor epoch for explicit source-opening views.
+        bytes.push(3);
         append_root_fold_descriptor_bytes(
             bytes,
             &self.root.params,
@@ -167,10 +167,9 @@ fn append_recursive_fold_descriptor_bytes(
 impl TerminalFoldParams {
     /// Canonical ordering descriptor for a terminal suffix.
     ///
-    /// Byte order is unchanged by the three-type merge: tag, the terminal
-    /// group's own bytes, the challenge family, the response shape, then the
-    /// input length. `TerminalFoldDescriptor` was a borrowed view over exactly
-    /// these five and is deleted.
+    /// The terminal group bytes bind method, extension basis/query map, source
+    /// encoding, integer codec and A geometry, followed by the shell, exact
+    /// response shape and full physical input length.
     pub fn canonical_descriptor_bytes(&self) -> Vec<u8> {
         let mut bytes = Vec::new();
         self.append_descriptor_bytes(&mut bytes);

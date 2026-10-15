@@ -39,7 +39,8 @@ impl ResolvedScheduleRow {
         schedule.validate_nonterminal_opening_execution(policy.claim_ext_degree)?;
         audit_resolved_schedule(&profiles, &schedule, policy)?;
         validate_schedule_ring_dims(&schedule)?;
-        validate_canonical_transition_lengths(&profiles, &schedule, policy)?;
+        validate_canonical_transition_lengths(&schedule, policy)?;
+        crate::artifact::encoded_schedule_row_bytes(&schedule)?;
         let selection = OpeningScheduleSelection {
             row_digest: schedule_row_digest(&profiles, &schedule)?,
         };
@@ -65,12 +66,35 @@ impl ResolvedScheduleRow {
         &self.schedule
     }
 
+    /// Ordered consuming layout, retaining source geometry and trusted views.
+    pub fn opening_layout(&self) -> Result<akita_params::OpeningClaimsLayout, AkitaError> {
+        let groups = self.schedule.root.params.groups();
+        akita_params::OpeningClaimsLayout::from_groups_and_views(
+            groups.iter().map(|group| group.profile.group).collect(),
+            groups.iter().map(|group| group.opening.source_view()).collect(),
+        )
+    }
+
+    /// Exact view-aware prover lookup identity of this already audited row.
+    pub fn lookup_key(&self) -> Result<akita_params::ScheduleLookupKey, AkitaError> {
+        akita_params::ScheduleLookupKey::with_views(
+            self.profiles.final_group.group,
+            self.profiles.precommitteds.clone(),
+            self.opening_layout()?.views().to_vec(),
+        )
+    }
+
+    /// Exact encoded artifact row-token size, enforcing the decoder's row cap.
+    pub fn encoded_row_bytes(&self) -> Result<usize, AkitaError> {
+        crate::artifact::encoded_schedule_row_bytes(&self.schedule)
+    }
+
     /// Check that opening claims have the exact layout authorized by this row.
     pub fn validate_opening_layout(
         &self,
         opening_batch: &akita_params::OpeningClaimsLayout,
     ) -> Result<(), AkitaError> {
-        if self.profiles.opening_layout()? != *opening_batch {
+        if self.opening_layout()? != *opening_batch {
             return Err(AkitaError::InvalidInput(
                 "committed-group descriptors do not match the opening layout".to_string(),
             ));
@@ -80,7 +104,6 @@ impl ResolvedScheduleRow {
 }
 
 fn validate_canonical_transition_lengths(
-    profiles: &CommittedGroupBatchProfile,
     schedule: &FoldSchedule,
     policy: &PlannerPolicy,
 ) -> Result<(), AkitaError> {
@@ -93,26 +116,14 @@ fn validate_canonical_transition_lengths(
             schedule.root.input_witness_len
         )));
     }
-    let expected_root_output = if root_params.has_preceding_groups() {
-        root_params.output_witness_len_for_field_bits(
-            field_bits,
-            policy.claim_ext_degree,
-            &profiles.opening_layout()?,
-        )?
-    } else {
-        planned_next_witness_len(
-            field_bits,
-            policy.claim_ext_degree,
-            root_params,
-            profiles.final_group.group.num_polynomials(),
-            root_params.witness_chunk.num_chunks,
-        )?
-        .ok_or_else(|| {
-            AkitaError::InvalidSetup(
-                "root schedule uses unsupported compression source geometry".to_string(),
-            )
-        })?
-    };
+    let expected_root_output = root_params.output_witness_len_for_field_bits(
+        field_bits,
+        policy.claim_ext_degree,
+        &akita_params::OpeningClaimsLayout::from_groups_and_views(
+            root_params.groups().iter().map(|group| group.profile.group).collect(),
+            root_params.groups().iter().map(|group| group.opening.source_view()).collect(),
+        )?,
+    )?;
     if schedule.root.output_witness_len != expected_root_output {
         return Err(AkitaError::InvalidSetup(format!(
             "root output witness length {} is not canonical; expected {expected_root_output}",

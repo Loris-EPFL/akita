@@ -9,7 +9,8 @@ mod prepared_openings;
 mod relation_quotient;
 
 pub(crate) use assembly::{
-    begin_cpu_recursive_witness, finish_cpu_recursive_witness, CpuRecursiveWitnessAssemblyState,
+    begin_cpu_recursive_witness, finish_cpu_full_ring_witness, finish_cpu_recursive_witness,
+    CpuRecursiveWitnessAssemblyState,
 };
 #[cfg(test)]
 pub(crate) use coefficient_packing::{

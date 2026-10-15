@@ -85,6 +85,79 @@ impl FoldParams {
     }
 }
 
+/// The full-ring shell has forty positions and L1 mass 56. The historical
+/// production d128 ladder uses (31, 0) and is a different protocol family.
+pub const FULL_RING_FOLD_CHALLENGE: akita_challenges::SparseChallengeConfig =
+    akita_challenges::SparseChallengeConfig {
+        count_pm1: 24,
+        count_pm2: 16,
+    };
+
+/// Least base32 response depth whose positive balanced reach covers every
+/// signed response in [-bound, bound]. This is not a probabilistic cap.
+pub fn full_ring_response_depth(bound: u128) -> Result<usize, AkitaError> {
+    let mut reach = 15u128;
+    let mut depth = 1usize;
+    while reach < bound {
+        reach = reach
+            .checked_mul(32)
+            .and_then(|n| n.checked_add(15))
+            .ok_or_else(|| {
+                AkitaError::InvalidSetup(
+                    "full-ring response depth exceeds checked integer range".into(),
+                )
+            })?;
+        depth += 1;
+    }
+    Ok(depth)
+}
+
+/// Terminal response wire representation, authenticated with the method/source.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum TerminalResponseCodec {
+    /// Legacy canonical Golomb-Rice, with the shape's signed-i16 bound.
+    GolombRice,
+    /// Exact little-endian two's-complement width, checked before K reduction.
+    SignedFixedWidth {
+        bytes_per_coefficient: usize,
+        coefficient_bound: u128,
+    },
+}
+
+impl TerminalResponseCodec {
+    /// All-valid d128 shell response for a source alphabet bounded by 16.
+    pub fn full_ring(blocks: usize) -> Result<Self, AkitaError> {
+        let bound = (blocks as u128)
+            .checked_mul(896)
+            .filter(|&n| n > 0)
+            .ok_or_else(|| AkitaError::InvalidSetup("full-ring terminal bound overflow".into()))?;
+        let modulus = u128::MAX - (1u128 << 32) + 22538;
+        if bound >= modulus / 2 {
+            return Err(AkitaError::InvalidSetup(
+                "terminal response is not a unique signed K representative".into(),
+            ));
+        }
+        Ok(Self::SignedFixedWidth {
+            bytes_per_coefficient: (1 + (128 - bound.leading_zeros()) as usize).div_ceil(8),
+            coefficient_bound: bound,
+        })
+    }
+
+    pub(crate) fn append_descriptor_bytes(self, bytes: &mut Vec<u8>) {
+        match self {
+            Self::GolombRice => bytes.push(0),
+            Self::SignedFixedWidth {
+                bytes_per_coefficient,
+                coefficient_bound,
+            } => {
+                bytes.push(1);
+                crate::descriptor_bytes::push_usize(bytes, bytes_per_coefficient);
+                bytes.extend_from_slice(&coefficient_bound.to_le_bytes());
+            }
+        }
+    }
+}
+
 /// Exact terminal committed-witness parameters.
 ///
 /// The terminal relation binds the source decomposition through the inner
@@ -93,6 +166,12 @@ impl FoldParams {
 /// matrix and no outer/open response decomposition.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct TerminalFoldParams {
+    /// Declared terminal algorithm; extension degree never selects a method.
+    pub opening_method: OpeningMethod,
+    /// The original representation used when the terminal A images were bound.
+    pub source_encoding: CommittedSourceEncoding,
+    /// Method-bound integer response representation.
+    pub response_codec: TerminalResponseCodec,
     /// Exact `(N, M, B)` block split of the terminal source.
     pub blocks: crate::BlockGeometry,
     /// A/source role: gadget decomposition and audited matrix identity.
@@ -123,6 +202,13 @@ impl TerminalFoldParams {
     /// existing `params_only` then `with_decomp` idiom on `CommittedGroupParams`.
     pub fn from_expanded_group(params: CommittedGroupParams) -> Self {
         Self {
+            opening_method: if params.opening_method().is_full_ring_scalar_extension() {
+                params.opening_method()
+            } else {
+                OpeningMethod::EvaluationTrace
+            },
+            source_encoding: params.source_encoding,
+            response_codec: TerminalResponseCodec::GolombRice,
             fold_challenge_config: params.fold_challenge_config(),
             response_shape: TerminalResponseShape {
                 layout: crate::TailSegmentLayout {
@@ -184,6 +270,110 @@ impl TerminalFoldParams {
         Ok((terminal, admission_cap))
     }
 
+    /// Construct the selected terminal from an admitted A-role candidate. The
+    /// integer envelope is all-valid, not an honest-response retry target.
+    pub fn try_full_ring_from_expanded_group(
+        params: CommittedGroupParams,
+        input_witness_len: usize,
+        response_shape: TerminalResponseShape,
+    ) -> Result<Self, AkitaError> {
+        let mut terminal = Self::from_expanded_group(params);
+        terminal.input_witness_len = input_witness_len;
+        terminal.response_shape = response_shape;
+        terminal.response_codec = TerminalResponseCodec::full_ring(terminal.blocks.live_blocks)?;
+        terminal.validate_opening_execution(2)?;
+        Ok(terminal)
+    }
+
+    /// Validate algorithm, basis, source identity, codec and actual installed A
+    /// matrix together. Does not install a catalog row or certify a guest family.
+    pub fn validate_opening_execution(&self, extension_degree: usize) -> Result<(), AkitaError> {
+        self.source_encoding.validate(self.d_a())?;
+        if !self.opening_method.is_full_ring_scalar_extension() {
+            if self.opening_method != OpeningMethod::EvaluationTrace
+                || self.response_codec != TerminalResponseCodec::GolombRice
+            {
+                return Err(AkitaError::InvalidSetup(
+                    "legacy terminal requires trace/Golomb-Rice".into(),
+                ));
+            }
+            return Ok(());
+        }
+        self.opening_method
+            .physical_coefficient_width(extension_degree, self.d_a())?;
+        let codec = TerminalResponseCodec::full_ring(self.blocks.live_blocks)?;
+        if self.source_encoding != CommittedSourceEncoding::CanonicalCoefficientTable
+            || self.response_codec != codec
+            || self.inner.digits.num_digits != 1
+            || self.inner.digits.log_basis != 5
+            || self.inner.matrix.sis_modulus_profile() != crate::SisModulusProfileId::Q128OffsetA7F7
+            || !matches!(
+                self.inner.matrix.security_route(),
+                InnerCommitSecurityRoute::Linf(_)
+            )
+            || self.inner_width() != self.blocks.positions_per_block
+            || !self.blocks.live_blocks.is_power_of_two()
+            || !self.blocks.positions_per_block.is_power_of_two()
+            || self
+                .blocks
+                .live_blocks
+                .checked_mul(self.inner_width())
+                .and_then(|n| n.checked_mul(128))
+                != Some(self.input_witness_len)
+        {
+            return Err(AkitaError::InvalidSetup(
+                "full-ring terminal source/codec/identity geometry mismatch".into(),
+            ));
+        }
+        let expected = FULL_RING_FOLD_CHALLENGE;
+        if self.fold_challenge_config != expected {
+            return Err(AkitaError::InvalidSetup(
+                "full-ring terminal requires the d128 shell".into(),
+            ));
+        }
+        self.inner.matrix.validate()?;
+        let TerminalResponseCodec::SignedFixedWidth {
+            coefficient_bound, ..
+        } = codec
+        else {
+            return Err(AkitaError::InvalidSetup(
+                "full-ring terminal codec mismatch".into(),
+            ));
+        };
+        if coefficient_bound > self.certified_response_linf_cap()? {
+            return Err(AkitaError::InvalidSetup(
+                "full-ring terminal exceeds installed A certificate".into(),
+            ));
+        }
+        if self.response_shape != TerminalResponseShape::derive(self, coefficient_bound)? {
+            return Err(AkitaError::InvalidSetup(
+                "full-ring terminal shape disagrees with its fixed codec".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Exact fixed payload, including the once-bound A images. Signed fixed
+    /// width carries no redundant length prefix; the descriptor fixes its size.
+    pub fn fixed_payload_bytes(&self, field_bits: u32) -> Result<usize, AkitaError> {
+        if matches!(self.response_codec, TerminalResponseCodec::GolombRice) {
+            return crate::terminal_response_max_bytes(field_bits, &self.response_shape);
+        }
+        if field_bits != 128 {
+            return Err(AkitaError::InvalidSetup(
+                "full-ring terminal codec requires the q128 base field".into(),
+            ));
+        }
+        self.validate_opening_execution(2)?;
+        self.response_shape
+            .layout
+            .e_field_elems()
+            .checked_add(self.response_shape.layout.t_field_elems())
+            .and_then(|n| n.checked_mul(crate::field_bytes(field_bits)))
+            .and_then(|n| n.checked_add(self.response_shape.layout.z_payload_bytes()))
+            .ok_or_else(|| AkitaError::InvalidSetup("terminal fixed payload overflow".into()))
+    }
+
     #[inline]
     pub fn d_a(&self) -> usize {
         self.inner.matrix.ring_dimension()
@@ -218,6 +408,22 @@ impl TerminalFoldParams {
     /// move the admission cap that gates acceptance. Reading the field removes
     /// that gap by construction.
     pub fn certified_response_linf_cap(&self) -> Result<u128, AkitaError> {
+        if let TerminalResponseCodec::SignedFixedWidth { .. } = self.response_codec {
+            let key = self.inner.matrix.sis_table_key().ok_or_else(|| {
+                AkitaError::InvalidSetup(
+                    "full-ring terminal requires an installed Linf A matrix".into(),
+                )
+            })?;
+            let challenge = crate::sis::FoldChallengeNorms::new(&self.fold_challenge_config);
+            return crate::sis::max_response_linf_for_role_a_collision(
+                key.coeff_linf_bound,
+                challenge.l1_norm,
+            )
+            .filter(|&bound| bound > 0)
+            .ok_or_else(|| {
+                AkitaError::InvalidSetup("terminal matrix has no response capacity".into())
+            });
+        }
         if matches!(
             self.inner.matrix.security_route(),
             crate::sis::InnerCommitSecurityRoute::L2 { .. }
@@ -279,6 +485,14 @@ impl TerminalFoldParams {
     /// triple, and the A depth; it now writes geometry, then the A role as
     /// `basis, depth, matrix`, then the fold decomposition.
     pub(crate) fn append_group_descriptor_bytes(&self, bytes: &mut Vec<u8>) {
+        // Terminal occurrences have no registered original-RAM view.
+        bytes.push(crate::SourceOpeningView::Decoded.tag());
+        // The separate full-ring family additionally binds its typed header.
+        if self.opening_method.is_full_ring_scalar_extension() {
+            self.opening_method.append_descriptor_bytes(bytes);
+            self.source_encoding.append_descriptor_bytes(bytes);
+            self.response_codec.append_descriptor_bytes(bytes);
+        }
         self.blocks.append_descriptor_bytes(bytes);
         self.inner.append_descriptor_bytes(bytes);
         self.fold.append_descriptor_bytes(bytes);
@@ -332,6 +546,35 @@ pub struct FoldScheduleDescriptorStep<'a> {
 }
 
 impl FoldSchedule {
+    /// Sum of all expanded role coefficients for the selected direct outer
+    /// family. Unlike the legacy maximum shared-prefix capacity, this prices
+    /// every original A/B/F role, shared D/H, and terminal A independently.
+    pub fn full_ring_expanded_setup_coefficients(&self) -> Result<usize, AkitaError> {
+        if !self
+            .root
+            .params
+            .opening_method()
+            .is_full_ring_scalar_extension()
+            || !self.recursive_folds.is_empty()
+        {
+            return Err(AkitaError::InvalidSetup(
+                "expanded full-ring cost requires the direct outer family".into(),
+            ));
+        }
+        self.validate_structure()?;
+        self.sis_occurrences()?
+            .iter()
+            .try_fold(0usize, |total, role| {
+                role.output_rank
+                    .checked_mul(role.input_width)
+                    .and_then(|n| n.checked_mul(role.ring_dimension))
+                    .and_then(|n| total.checked_add(n))
+                    .ok_or_else(|| {
+                        AkitaError::InvalidSetup("expanded full-ring setup cost overflow".into())
+                    })
+            })
+    }
+
     pub fn num_fold_levels(&self) -> usize {
         self.recursive_folds.len() + 2
     }
@@ -343,6 +586,16 @@ impl FoldSchedule {
     pub fn validate_structure(&self) -> Result<(), AkitaError> {
         let root_commitment = &self.root.params;
         root_commitment.validate_group_topology()?;
+        root_commitment.own_group().opening.validate_source_view(
+            &root_commitment.own_group().profile, 1,
+        )?;
+        if root_commitment.groups().iter().any(|group| {
+            group.opening.source_view == crate::SourceOpeningView::OriginalRamPlanesV1
+        }) && (root_commitment.witness_chunk.num_chunks != 1
+            || root_commitment.source_encoding != crate::CommittedSourceEncoding::CanonicalCoefficientTable)
+        {
+            return Err(AkitaError::InvalidSetup("raw roots require unchunked canonical source encoding".into()));
+        }
         if root_commitment.setup_prefix().is_some() {
             return Err(AkitaError::InvalidSetup(
                 "root fold cannot consume a setup prefix".into(),
@@ -358,15 +611,28 @@ impl FoldSchedule {
                 "root fold payload must be compressed".into(),
             ));
         }
-        if root_commitment.ring_relation_mode != crate::RingRelationMode::QuotientLift {
+        let full_ring = root_commitment
+            .opening_method()
+            .is_full_ring_scalar_extension();
+        let expected_root_mode = if full_ring {
+            crate::RingRelationMode::ExactCoefficientRows
+        } else {
+            crate::RingRelationMode::QuotientLift
+        };
+        if root_commitment.ring_relation_mode != expected_root_mode {
             return Err(AkitaError::InvalidSetup(
-                "nonterminal level 0 requires quotient-lift ring relations".into(),
+                "root relation mode disagrees with its opening family".into(),
             ));
         }
         let mut payload_phase = crate::CommitmentPayloadPhase::CompressedPrefix;
-        let mut relation_phase = crate::RingRelationPhase::QuotientPrefix;
+        let mut relation_phase = crate::RingRelationPhase::QuotientPrefix.after(expected_root_mode);
         for (index, step) in self.recursive_folds.iter().enumerate() {
             step.params.validate_group_topology()?;
+            if step.params.groups().iter().any(|group| {
+                group.opening.source_view != crate::SourceOpeningView::Decoded
+            }) {
+                return Err(AkitaError::InvalidSetup("recursive/setup openings require Decoded view".into()));
+            }
             if !step.params.precommitted_groups().is_empty() {
                 return Err(AkitaError::InvalidSetup(format!(
                     "recursive fold {index} cannot consume precommitted groups"
@@ -423,7 +689,7 @@ impl FoldSchedule {
         }
         let (first_successor_d, first_successor_opening_num_vars) =
             self.recursive_folds.first().map_or_else(
-                || {
+                || -> Result<_, AkitaError> {
                     Ok((
                         self.terminal.d_a(),
                         self.terminal.recursive_opening_num_vars()?,
@@ -464,7 +730,7 @@ impl FoldSchedule {
             }
             let (successor_d, successor_opening_num_vars) =
                 self.recursive_folds.get(index + 1).map_or_else(
-                    || {
+                    || -> Result<_, AkitaError> {
                         Ok((
                             self.terminal.d_a(),
                             self.terminal.recursive_opening_num_vars()?,
@@ -487,6 +753,17 @@ impl FoldSchedule {
                 "terminal fold and response lengths must be nonzero".to_string(),
             ));
         }
+        if full_ring != self.terminal.opening_method.is_full_ring_scalar_extension() {
+            return Err(AkitaError::InvalidSetup(
+                "terminal and root opening families disagree".into(),
+            ));
+        }
+        if full_ring {
+            self.terminal.validate_opening_execution(2)?;
+            for fold in std::iter::once(&self.root).chain(self.recursive_folds.iter()) {
+                fold.params.validate_full_ring_execution(2)?;
+            }
+        }
         Ok(())
     }
 
@@ -501,7 +778,11 @@ impl FoldSchedule {
         &self,
         extension_degree: usize,
     ) -> Result<(), AkitaError> {
+        self.terminal.validate_opening_execution(extension_degree)?;
         self.validate_structure()?;
+        for group in self.root.params.groups() {
+            group.opening.validate_source_view(&group.profile, extension_degree)?;
+        }
         if !extension_degree.is_power_of_two() {
             return Err(AkitaError::InvalidSetup(
                 "opening extension degree must be a nonzero power of two".into(),
@@ -632,6 +913,34 @@ fn validate_level_opening_execution(
     let first = groups
         .first()
         .ok_or_else(|| AkitaError::InvalidSetup("nonterminal fold has no opening groups".into()))?;
+    if first.opening_method.is_full_ring_scalar_extension() {
+        let expected = FULL_RING_FOLD_CHALLENGE;
+        for group in groups {
+            group.opening_method.physical_coefficient_width(
+                extension_degree,
+                group.inner_commit_matrix.ring_dimension(),
+            )?;
+            if group.opening_method != OpeningMethod::FULL_RING_E2
+                || group.source_encoding != CommittedSourceEncoding::CanonicalCoefficientTable
+                || group.expected_source_encoding.is_some_and(|encoding| {
+                    encoding != CommittedSourceEncoding::CanonicalCoefficientTable
+                })
+                || group.inner_commit_matrix.sis_modulus_profile()
+                    != crate::SisModulusProfileId::Q128OffsetA7F7
+                || group.fold_challenge_config != expected
+                || !matches!(
+                    group.inner_commit_matrix.security_route(),
+                    InnerCommitSecurityRoute::Linf(_)
+                )
+            {
+                return Err(AkitaError::InvalidSetup(
+                    "full-ring opening group violates its method/source/shell contract".into(),
+                ));
+            }
+            group.inner_commit_matrix.validate()?;
+        }
+        return Ok(());
+    }
     let packing_family = matches!(
         first.opening_method,
         OpeningMethod::SubringCoefficientPacking { .. }
@@ -648,10 +957,11 @@ fn validate_level_opening_execution(
         )));
     }
     if groups.iter().any(|group| {
-        matches!(
-            group.opening_method,
-            OpeningMethod::SubringCoefficientPacking { .. }
-        ) != packing_family
+        group.opening_method.is_full_ring_scalar_extension()
+            || matches!(
+                group.opening_method,
+                OpeningMethod::SubringCoefficientPacking { .. }
+            ) != packing_family
     }) {
         return Err(AkitaError::InvalidSetup(
             "all groups consumed by one fold must use the same opening-method family".into(),

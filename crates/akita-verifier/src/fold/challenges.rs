@@ -1,11 +1,13 @@
 //! Fold-challenge draw for every opening group of one recursive level.
 
-use akita_challenges::VerifierFoldDraw;
+use akita_challenges::{FoldDraw, ShellLevelDescriptor, VerifierFoldDraw};
 use akita_error::AkitaError;
 use akita_params::{CommittedGroupParams, OpeningClaimsLayout};
 use akita_serialization::AkitaSerialize;
 use akita_types::GrindingReplay;
-use akita_types::{draw_group_fold_challenges, GroupFoldChallenges};
+use akita_types::{
+    group_fold_challenges_from_level, plan_group_fold_challenges, GroupFoldChallenges,
+};
 use jolt_field::{CanonicalEncoding, ExtField, Field};
 
 /// Spongefish replay of all sparse fold roots for one recursive level.
@@ -19,15 +21,29 @@ where
     F: Field + CanonicalEncoding + AkitaSerialize,
     E: ExtField<F>,
 {
+    let plans = (0..opening_batch.num_groups())
+        .map(|group_index| {
+            let group_lp = lp.group_params_geometry(opening_batch, group_index)?;
+            plan_group_fold_challenges::<F, E>(
+                &group_lp,
+                group_index,
+                opening_batch.group_layout(group_index)?.num_polynomials(),
+            )
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let descriptor = ShellLevelDescriptor::new(
+        plans.iter().map(|plan| plan.descriptor().clone()).collect(),
+    )?;
+    let shell = {
+        let mut live = VerifierFoldDraw::new(grinding.state_mut(), level);
+        live.draw_shell_level(&descriptor)?
+    };
     let mut group_challenges = Vec::with_capacity(opening_batch.num_groups());
-    for group_index in 0..opening_batch.num_groups() {
+    for (group_index, plan) in plans.iter().enumerate() {
         let group_lp = lp.group_params_geometry(opening_batch, group_index)?;
         let k_g = opening_batch.group_layout(group_index)?.num_polynomials();
         let group = u32::try_from(group_index).map_err(|_| AkitaError::InvalidProof)?;
-        let drawn = {
-            let mut live = VerifierFoldDraw::new(grinding.state_mut(), level, group);
-            draw_group_fold_challenges::<F, E, _>(&mut live, &group_lp, group_index, k_g)?
-        };
+        let drawn = group_fold_challenges_from_level(plan, &shell)?;
         let coordinate_count = group_lp
             .num_live_blocks()
             .checked_mul(k_g)

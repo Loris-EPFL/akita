@@ -16,10 +16,7 @@ type RecursiveEvaluationTraceCfg = crate::test_support::EarlyEvaluationTraceConf
 fn synthetic_packing_row_is_derived_from_one_checked_authority() {
     let catalog = akita_config::test_support::workspace_schedule_catalog::<PackingCfg>()
         .expect("workspace schedule catalog");
-    let key = ScheduleLookupKey {
-        final_group: PolynomialGroupLayout::singleton(20),
-        precommitteds: Vec::new(),
-    };
+    let key = ScheduleLookupKey::decoded(PolynomialGroupLayout::singleton(20), Vec::new());
     let first = PackingCfg::derive_catalog_row(&catalog, &key, 64).unwrap();
     let second = PackingCfg::derive_catalog_row(&catalog, &key, 64).unwrap();
     assert_eq!(first.selection(), second.selection());
@@ -239,8 +236,7 @@ fn fixed_root_packing_round_trips_in_both_bases() {
                     BasisMode::Lagrange => b"packing/root/lagrange".as_slice(),
                     BasisMode::Monomial => b"packing/root/monomial".as_slice(),
                 };
-                let proof = scheme
-                    .batched_prove(&setup, prover_data, &stack, label, basis)
+                let proof = { let native_setup = &setup; let native_opening = prover_data; let native_session = label; let native_basis = basis; crate::prepare_native_prover_context(native_setup.expanded.descriptor(), scheme.schedules(), &native_opening, native_session, &[], native_basis, 0).and_then(|native_context| scheme.batched_prove(native_setup, native_opening, &stack, native_session, native_context.registry(), native_context.augmentation(), native_basis)) }
                     .unwrap();
                 assert!(!proof.is_empty());
                 let verifier_claims = OpeningClaims::from_groups(vec![PolynomialGroupClaims::new(
@@ -254,7 +250,7 @@ fn fixed_root_packing_round_trips_in_both_bases() {
                 scheme
                     .verifier(verifier_setup.clone())
                     .and_then(|verifier| {
-                        verifier.batched_verify(proof.as_slice(), label, statement, basis)
+                        { let native_statement = statement; let native_session = label; let native_basis = basis; crate::prepare_native_proof_context(verifier.setup().expanded().descriptor(), verifier.schedules(), &native_statement, native_session, &[], native_basis, 0).and_then(|native_context| verifier.batched_verify(proof.as_slice(), native_session, native_context.registry(), native_context.augmentation(), native_statement, native_basis)) }
                     })
                     .unwrap();
 
@@ -270,11 +266,17 @@ fn fixed_root_packing_round_trips_in_both_bases() {
                         .unwrap()])
                         .unwrap();
                     let statement = GroupBatchStatement::new(selection, verifier_claims).unwrap();
+                    let native_context = crate::prepare_native_proof_context(
+                        verifier_setup.expanded().descriptor(), scheme.schedules(),
+                        &statement, label, &[], basis, 0,
+                    ).unwrap();
                     assert!(scheme
                         .verifier(verifier_setup.clone())
                         .and_then(|verifier| verifier.batched_verify(
                             malformed.as_slice(),
                             label,
+                            native_context.registry(),
+                            native_context.augmentation(),
                             statement,
                             basis
                         ))

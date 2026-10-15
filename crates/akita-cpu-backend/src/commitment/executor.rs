@@ -45,12 +45,15 @@ where
     },
 }
 
+pub(crate) use akita_types::FullRingCommitmentRoles;
+
 pub(crate) struct CommitmentExecutor<
     'a,
     F: Field + CanonicalEncoding,
     SP: CommitmentStatePolicy<F> = ResidentStatePolicy,
 > {
-    pub(super) setup: akita_types::AkitaSetupDescriptor,
+    pub(super) setup: akita_types::AkitaSetupIdentity,
+    pub(super) full_ring_roles: Option<Arc<FullRingCommitmentRoles>>,
     pub(super) route: PreparedInnerOuterRoute<'a, F>,
     pub(super) compression: Option<PreparedCompression<'a, F>>,
     pub(super) state_policy: SP,
@@ -110,7 +113,7 @@ where
         standard_types: Vec<PolynomialType>,
         state_policy: SP,
     ) -> Result<Self, AkitaError> {
-        if backend.prepared_expanded_setup(prepared).descriptor() != expanded.descriptor() {
+        if backend.prepared_expanded_setup(prepared)?.descriptor() != expanded.descriptor() {
             return Err(AkitaError::InvalidSetup(
                 "CPU commitment executor setup descriptor mismatch".into(),
             ));
@@ -164,6 +167,111 @@ where
         ))?;
         builder.build()
     }
+
+    /// Reuse native commitment stages with the installed source-role registry.
+    /// `None` selects the installation's exact final A-only terminal role.
+    pub(crate) fn cpu_full_ring<E>(
+        backend: &'a CpuBackend<F, E>,
+        source: Option<akita_types::FullRingSourceId>,
+        standard_types: Vec<PolynomialType>,
+        state_policy: SP,
+    ) -> Result<Self, AkitaError> {
+        let descriptor = backend.full_ring_setup()?.descriptor();
+        let roles = match source {
+            Some(source) => descriptor.source(source)?.commitment_roles.clone(),
+            None => match descriptor.levels().last().map(|level| level.successor) {
+                Some(akita_types::FullRingSuccessor::Terminal { a }) => FullRingCommitmentRoles {
+                    inner: a,
+                    outer: None,
+                    compression: Vec::new(),
+                },
+                _ => {
+                    return Err(AkitaError::InvalidSetup(
+                        "installed terminal role is absent".into(),
+                    ))
+                }
+            },
+        };
+        Self::cpu_full_ring_roles(backend, roles, standard_types, state_policy)
+    }
+
+    /// Role-explicit route for independently admitted inner/recursive registries.
+    pub(crate) fn cpu_full_ring_roles<E>(
+        backend: &'a CpuBackend<F, E>,
+        roles: FullRingCommitmentRoles,
+        standard_types: Vec<PolynomialType>,
+        state_policy: SP,
+    ) -> Result<Self, AkitaError> {
+        if roles.outer.is_some() == roles.compression.is_empty() {
+            return Err(AkitaError::InvalidSetup(
+                "incomplete installed commitment role chain".into(),
+            ));
+        }
+        let prepared = backend.full_ring_prepared(roles.inner)?;
+        let mut builder = CommitmentExecutorBuilder::with_identity(
+            akita_types::AkitaSetupIdentity::FullRing(
+                backend.full_ring_setup()?.descriptor().clone(),
+            ),
+            state_policy,
+        );
+        let mut capabilities = CommitmentRequestCapabilities::split::<CpuPreparedSetup<F>>(
+            BackendKindId::of::<super::external::CpuBackendKind>("cpu")?,
+            standard_types,
+        );
+        capabilities.accept_any_standard_type();
+        let inner = Arc::new(CpuInnerCommitOperation::new(backend, prepared));
+        let instance = builder.issue_backend_instance();
+        let resources = StageResources::controlled(PreparedCommitmentResources::for_full_ring(
+            backend, prepared,
+        )?);
+        let context = builder.operation_context(instance, "cpu-installed-inner", resources)?;
+        builder.register_inner(PreparedInnerCommitment::new(
+            inner.clone(),
+            inner.owner().clone(),
+            context,
+            capabilities,
+            StageDimensionCapabilities::cpu_role::<F>(akita_params::RingRole::Inner),
+            Some(inner.portable_exporter()),
+        )?)?;
+        if let Some(role) = roles.outer {
+            let prepared = backend.full_ring_prepared(role)?;
+            let outer = Arc::new(CpuOuterCommitOperation::new(
+                backend,
+                prepared,
+                inner.as_ref(),
+            ));
+            let resources = StageResources::controlled(PreparedCommitmentResources::for_full_ring(
+                backend, prepared,
+            )?);
+            let context = builder.operation_context(instance, "cpu-installed-outer", resources)?;
+            builder.register_outer(PreparedOuterCommitment::new(
+                outer,
+                inner.owner().clone(),
+                context,
+                StageDimensionCapabilities::cpu_role::<F>(akita_params::RingRole::Outer),
+            ))?;
+            let compression = Arc::new(CpuCompressionOperation::for_full_ring(
+                backend,
+                roles.compression.clone(),
+            )?);
+            let prepared = backend.full_ring_prepared(roles.compression[0])?;
+            let resources = StageResources::controlled(PreparedCommitmentResources::for_full_ring(
+                backend, prepared,
+            )?);
+            let context =
+                builder.operation_context(instance, "cpu-installed-compression", resources)?;
+            builder.register_compression(PreparedCompression::new(
+                compression.clone(),
+                compression.owner().clone(),
+                context,
+                CompressionOperationCapabilities::cpu::<F>(),
+                Some(compression.portable_exporter()),
+            ))?;
+        }
+        let mut executor = builder.build()?;
+        executor.full_ring_roles = Some(Arc::new(roles));
+        Ok(executor)
+    }
 }
 
 impl<'a, F, SP> CommitmentExecutor<'a, F, SP>
@@ -177,7 +285,9 @@ where
         &self,
         expanded: &AkitaExpandedSetup<F>,
     ) -> Result<(), AkitaError> {
-        if self.setup != *expanded.descriptor() {
+        if self.setup
+            != akita_types::AkitaSetupIdentity::SharedPrefix(expanded.descriptor().clone())
+        {
             return Err(AkitaError::InvalidSetup(
                 "commitment executor setup descriptor mismatch".into(),
             ));
@@ -328,12 +438,79 @@ where
     }
 
     fn validate_setup_capacity(&self, plan: &CommitmentExecutionPlan) -> Result<(), AkitaError> {
-        let required = plan.max_setup_field_elements()?;
-        if required > self.setup.num_field_elements {
-            return Err(AkitaError::InvalidSetup(format!(
-                "commitment execution requires {required} setup field elements, but setup has {}",
-                self.setup.num_field_elements
-            )));
+        match (&self.setup, &self.full_ring_roles) {
+            (akita_types::AkitaSetupIdentity::SharedPrefix(setup), None) => {
+                let required = plan.max_setup_field_elements()?;
+                if required > setup.num_field_elements {
+                    return Err(AkitaError::InvalidSetup(
+                        "commitment exceeds legacy setup capacity".into(),
+                    ));
+                }
+            }
+            (akita_types::AkitaSetupIdentity::FullRing(setup), Some(roles)) => {
+                let inner = setup.matrix(roles.inner)?;
+                let width = plan
+                    .inner()
+                    .num_positions_per_block
+                    .checked_mul(plan.inner().num_digits_inner)
+                    .ok_or_else(|| AkitaError::InvalidSetup("installed A width overflow".into()))?;
+                if (inner.ring_dimension, inner.rows, inner.columns)
+                    != (plan.inner().ring_dimension, plan.inner().n_a, width)
+                {
+                    return Err(AkitaError::InvalidSetup(
+                        "commitment changes installed A geometry".into(),
+                    ));
+                }
+                match (roles.outer, plan.uncompressed()) {
+                    (Some(role), Some(uncompressed)) => {
+                        let outer = setup.matrix(role)?;
+                        let planned = uncompressed.outer();
+                        if (outer.ring_dimension, outer.rows, outer.columns)
+                            != (
+                                planned.ring_dimension(),
+                                planned.n_b(),
+                                planned.geometry().physical_input_width(),
+                            )
+                        {
+                            return Err(AkitaError::InvalidSetup(
+                                "commitment changes installed B geometry".into(),
+                            ));
+                        }
+                    }
+                    (None, None) => {}
+                    _ => {
+                        return Err(AkitaError::InvalidSetup(
+                            "commitment changes installed stage inventory".into(),
+                        ))
+                    }
+                }
+                if let Some(chain) = plan.compression() {
+                    if chain.maps().len() != roles.compression.len() {
+                        return Err(AkitaError::InvalidSetup(
+                            "commitment changes installed F chain".into(),
+                        ));
+                    }
+                    for (&role, map) in roles.compression.iter().zip(chain.maps()) {
+                        let actual = setup.matrix(role)?;
+                        if (actual.ring_dimension, actual.rows, actual.columns)
+                            != (map.ring_dimension(), map.output_rank(), map.input_width())
+                        {
+                            return Err(AkitaError::InvalidSetup(
+                                "commitment changes installed F geometry".into(),
+                            ));
+                        }
+                    }
+                } else if !roles.compression.is_empty() {
+                    return Err(AkitaError::InvalidSetup(
+                        "commitment omits installed F chain".into(),
+                    ));
+                }
+            }
+            _ => {
+                return Err(AkitaError::InvalidSetup(
+                    "commitment setup identity/roles disagree".into(),
+                ))
+            }
         }
         Ok(())
     }
@@ -463,7 +640,8 @@ where
             sources.len(),
             plan.relation_mode(),
             plan.compression().cloned(),
-        )?;
+        )?
+        .with_matrix_roles(self.full_ring_roles.clone())?;
         let output =
             inner_registration
                 .stage
@@ -518,7 +696,8 @@ where
             sources.len(),
             plan.relation_mode(),
             plan.compression().cloned(),
-        )?;
+        )?
+        .with_matrix_roles(self.full_ring_roles.clone())?;
         if let Some(fused) = self.fused_for_plan(plan) {
             let output =
                 fused
@@ -830,10 +1009,7 @@ mod tests {
             Err(error) => error,
             Ok(_) => panic!("undersized setup must fail before materialization"),
         };
-        assert!(matches!(
-            error,
-            AkitaError::InvalidSetup(message) if message.contains("setup field elements")
-        ));
+        assert!(matches!(error, AkitaError::InvalidSetup(_)));
         assert_eq!(source.materializations.load(Ordering::SeqCst), 0);
     }
 

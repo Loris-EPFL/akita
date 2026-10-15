@@ -220,6 +220,11 @@ where
                 )?,
                 support,
             },
+            RingRelationMode::ExactCoefficientRows => {
+                return Err(AkitaError::InvalidSetup(
+                    "full-ring coefficient rows do not use the legacy ring switch".into(),
+                ));
+            }
         }
     } else {
         PreparedStage2Compression::Raw

@@ -13,6 +13,14 @@ use compiler::checked_logical_len;
 pub enum CommitSourceClass {
     /// General field coefficients represented by balanced signed digits.
     Dense,
+    /// Original balanced planes, with the full signed alphabet in every plane.
+    /// Unlike `Dense`, decoding modulo the field does not bound this witness.
+    OriginalBalancedDigitPlanes {
+        /// Logarithm of the immutable balanced digit base.
+        log_basis: u32,
+        /// Number of original planes per coefficient.
+        num_digits: usize,
+    },
     /// Bounded signed coefficients in Akita's packed representation.
     ShortNorm,
     /// At most one unit coefficient in every fixed-size chunk.
@@ -32,6 +40,8 @@ pub struct CommitSourceDescriptor {
     num_vars: usize,
     total_coefficient_len: usize,
     live_coefficient_len: usize,
+    /// Extent defining original A blocks; legacy sources use the live prefix.
+    commitment_coefficient_len: usize,
     class: CommitSourceClass,
     family_name: &'static str,
 }
@@ -74,9 +84,16 @@ impl CommitSourceDescriptor {
             num_vars,
             total_coefficient_len,
             live_coefficient_len,
+            commitment_coefficient_len: live_coefficient_len,
             class,
             family_name,
         })
+    }
+
+    /// Select the complete physical grid without claiming padding is stored.
+    pub(crate) fn with_full_physical_extent(mut self) -> Self {
+        self.commitment_coefficient_len = self.total_coefficient_len;
+        self
     }
 
     /// Logical multilinear variable count.
@@ -218,7 +235,6 @@ impl AvailablePolynomialTypes {
     }
 
     /// Issue an opaque selection for one advertised entry.
-    #[cfg(test)]
     pub(crate) fn select(&self, index: usize) -> Result<PolynomialTypeSelection, AkitaError> {
         let selected = self.entries.get(index).copied().ok_or_else(|| {
             AkitaError::InvalidInput("polynomial representation selection is out of range".into())
@@ -257,17 +273,32 @@ pub(crate) enum DenseRepresentation<'a, F: Field> {
     PredecomposedDigits(PredecomposedDigitPlanes<'a>),
 }
 
+/// Borrowed original digit storage; neither variant reconstructs field values.
+pub(crate) enum DigitPlaneStorage<'a> {
+    Unpacked(&'a [i8]),
+    Packed(crate::sources::packed_digits::PackedSignedDigitView<'a>),
+}
+
+impl DigitPlaneStorage<'_> {
+    pub(crate) fn len(&self) -> usize {
+        match self {
+            Self::Unpacked(bytes) => bytes.len(),
+            Self::Packed(digits) => digits.len(),
+        }
+    }
+}
+
 /// Checked borrowed dense digit planes.
 pub(crate) struct PredecomposedDigitPlanes<'a> {
     /// Flat signed digits in `[ring][digit][coefficient]` order.
-    pub bytes: &'a [i8],
+    pub bytes: DigitPlaneStorage<'a>,
     /// Ring dimension of each digit plane.
     pub ring_dimension: usize,
     /// Number of digit planes per ring.
     pub num_digits: usize,
     /// Logarithm of the balanced decomposition basis.
     pub log_basis: u32,
-    /// Logical number of source rings.
+    /// Source rings represented, including explicitly owned A-block padding.
     pub logical_ring_count: usize,
 }
 

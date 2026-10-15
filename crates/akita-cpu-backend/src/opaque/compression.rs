@@ -28,6 +28,8 @@ pub(crate) enum CompressionRelationOutput<F: Field> {
     QuotientLift { quotients: Vec<RingVec<F>> },
     /// Reduced-evaluation mode retains no quotient image.
     ReducedEvaluation,
+    /// Exact coefficient rows reduce each native product internally.
+    ExactCoefficientRows,
 }
 
 #[cfg(test)]
@@ -35,7 +37,7 @@ impl<F: Field> CompressionRelationOutput<F> {
     pub(crate) fn quotient_lift(&self) -> Result<&[RingVec<F>], AkitaError> {
         match self {
             Self::QuotientLift { quotients } => Ok(quotients),
-            Self::ReducedEvaluation => Err(AkitaError::InvalidSetup(
+            Self::ReducedEvaluation | Self::ExactCoefficientRows => Err(AkitaError::InvalidSetup(
                 "reduced compression output has no quotient rows".into(),
             )),
         }
@@ -120,6 +122,125 @@ fn quotient_from_products<F: Field, const D: usize>(
         })
         .collect();
     RingVec::from_coeffs_with_ring_dim(coefficients, D)
+}
+
+/// Derive an ordinary material view of an authenticated native commitment.
+///
+/// The caller authenticates the source, frozen producer contract, literal
+/// A/B/F roles and complete original retained material before entering here.
+/// In particular, equality to the original B image is not inferred from the
+/// first packed F input. The original exact-row handle is never modified.
+pub(crate) fn derive_original_quotient_lift<F>(
+    backend: &crate::opaque::CpuBackend<F, F>,
+    original: &crate::commitment::PortableCommitmentHandle<F>,
+    profile: &akita_params::GroupCommitPhaseParams,
+    commitment: &akita_types::Commitment<F>,
+) -> Result<crate::commitment::PortableCommitmentHandle<F>, AkitaError>
+where
+    F: Field + CanonicalEncoding,
+{
+    use crate::commitment::InnerRelationState;
+
+    profile.validate_frozen_precommit(F::MODULUS_BITS)?;
+    let execution = crate::commitment::CommitmentExecutionPlan::for_full_ring_root(profile)?;
+    original.preflight_inner_relation(execution.inner(), profile.group.num_polynomials())?;
+    let plan = execution.compression().ok_or_else(|| {
+        AkitaError::InvalidInput("original commitment has no compression path".into())
+    })?;
+    original.validate_outer_compression_mode(plan, RingRelationMode::ExactCoefficientRows)?;
+    let witness = original.reduced_outer_compression_witness(plan)?;
+    let ctx = OperationCtx::for_full_ring(backend, backend.prepared()?)?;
+    let quotients = derive_retained_compression_quotients(&ctx, &witness, commitment.rows())?;
+    original.with_quotient_lift(plan, quotients)
+}
+
+fn derive_retained_compression_quotients<F, B>(
+    ctx: &OperationCtx<'_, F, B>,
+    witness: &CompressionChainWitness,
+    terminal: &RingVec<F>,
+) -> Result<Vec<RingVec<F>>, AkitaError>
+where
+    F: Field + CanonicalEncoding,
+    B: CompressionComputeBackend<F>,
+{
+    let plan = witness.plan();
+    let terminal_map = plan.maps().last().ok_or_else(|| {
+        AkitaError::InvalidInput("retained compression path is empty".into())
+    })?;
+    if !plan.modulus_profile().matches_modulus(field_modulus::<F>()?)
+        || terminal.coeff_len() != plan.terminal_coefficients()
+        || (terminal.ring_dim() != 0 && terminal.ring_dim() != terminal_map.ring_dimension())
+    {
+        return Err(AkitaError::InvalidInput(
+            "retained compression path field or terminal shape mismatch".into(),
+        ));
+    }
+    let mut quotients = Vec::with_capacity(plan.maps().len());
+    for (index, stage) in witness.stages().iter().enumerate() {
+        // Recomposition only checks the original path; it never supplies
+        // replacement digits to a compression kernel.
+        let next_input = witness
+            .stages()
+            .get(index + 1)
+            .map(PackedNegativeBinary::recompose::<F>)
+            .transpose()?;
+        let expected_output = next_input.as_deref().unwrap_or_else(|| terminal.coeffs());
+        let quotient = dispatch_for_field!(
+            akita_params::ProtocolDispatchSlot::Compression,
+            F,
+            stage.map().ring_dimension(),
+            |D| derive_retained_stage_quotient::<F, B, D>(ctx, stage, expected_output)
+        )?;
+        quotients.push(quotient);
+    }
+    Ok(quotients)
+}
+
+fn derive_retained_stage_quotient<F, B, const D: usize>(
+    ctx: &OperationCtx<'_, F, B>,
+    stage: &PackedNegativeBinary,
+    expected_output: &[F],
+) -> Result<RingVec<F>, AkitaError>
+where
+    F: Field + CanonicalEncoding,
+    B: CompressionComputeBackend<F>,
+{
+    let map = stage.map();
+    if expected_output.len() != map.output_coefficients() {
+        return Err(AkitaError::InvalidInput(
+            "retained compression stage output shape mismatch".into(),
+        ));
+    }
+    let rows = stage.expand_rows::<D>()?;
+    let mut products = ctx
+        .backend()
+        .compression_rows_products(ctx.prepared(), &[rows.as_slice()])?;
+    if products.len() != 1 {
+        return Err(AkitaError::Internal(
+            "compression backend returned the wrong retained-stage batch length".into(),
+        ));
+    }
+    let products = products.pop().ok_or_else(|| {
+        AkitaError::Internal("compression backend omitted the retained stage".into())
+    })?;
+    if products.negacyclic.len() != map.output_rank()
+        || products.cyclic.len() != map.output_rank()
+    {
+        return Err(AkitaError::Internal(
+            "compression backend returned the wrong retained-stage rank".into(),
+        ));
+    }
+    if !products
+        .negacyclic
+        .iter()
+        .flat_map(|row| row.coefficients().iter())
+        .eq(expected_output.iter())
+    {
+        return Err(AkitaError::InvalidInput(
+            "retained compression bytes disagree with the next input or public payload".into(),
+        ));
+    }
+    quotient_from_products(&products.cyclic, &products.negacyclic)
 }
 
 fn checked_sum_bytes(
@@ -228,7 +349,7 @@ where
                 .unzip();
             (negacyclic, Some(cyclic))
         }
-        RingRelationMode::ReducedEvaluation => (
+        RingRelationMode::ReducedEvaluation | RingRelationMode::ExactCoefficientRows => (
             ctx.backend()
                 .compression_negacyclic_rows(ctx.prepared(), &views)?,
             None,
@@ -418,7 +539,9 @@ where
         for batch in execute_stage(ctx, &mut items, map_index)? {
             match batch.relation_mode {
                 RingRelationMode::QuotientLift => report.quotient_lift_batches += 1,
-                RingRelationMode::ReducedEvaluation => report.reduced_evaluation_batches += 1,
+                RingRelationMode::ReducedEvaluation | RingRelationMode::ExactCoefficientRows => {
+                    report.reduced_evaluation_batches += 1
+                }
             }
             report.digitization += batch.digitization;
             report.kernel_including_prepare += batch.kernel_including_prepare;
@@ -472,13 +595,17 @@ where
                     quotients: item.quotients,
                 }
             }
-            RingRelationMode::ReducedEvaluation => {
+            RingRelationMode::ReducedEvaluation | RingRelationMode::ExactCoefficientRows => {
                 if !item.quotients.is_empty() {
                     return Err(AkitaError::Internal(
                         "reduced compression evaluation unexpectedly retained quotients".into(),
                     ));
                 }
-                CompressionRelationOutput::ReducedEvaluation
+                if item.relation_mode == RingRelationMode::ExactCoefficientRows {
+                    CompressionRelationOutput::ExactCoefficientRows
+                } else {
+                    CompressionRelationOutput::ReducedEvaluation
+                }
             }
         };
         outputs.push(CompressionExecutionOutput {
@@ -493,13 +620,74 @@ where
     Ok((outputs, report))
 }
 
+/// Execute one original F/H chain using its separately installed role maps.
+/// Distinct chains are never grouped merely because their shapes coincide.
+pub(crate) fn execute_full_ring_compression<F, E, Id>(
+    backend: &crate::opaque::CpuBackend<F, E>,
+    roles: &[akita_types::FullRingMatrixRole],
+    input: CompressionExecutionInput<Id, F>,
+) -> Result<CompressionExecutionOutput<Id, F>, AkitaError>
+where
+    F: Field + CanonicalEncoding,
+{
+    if input.relation_mode != RingRelationMode::ExactCoefficientRows
+        || roles.len() != input.plan.maps().len()
+        || input.coefficients.len() != input.plan.source_coefficients()
+        || !input
+            .plan
+            .modulus_profile()
+            .matches_modulus(field_modulus::<F>()?)
+    {
+        return Err(AkitaError::InvalidSetup(
+            "installed compression role plan mismatch".into(),
+        ));
+    }
+    let mut item = WorkItem {
+        id: input.id,
+        plan: input.plan,
+        coefficients: input.coefficients,
+        relation_mode: input.relation_mode,
+        stages: Vec::new(),
+        quotients: Vec::new(),
+    };
+    for (map_index, &role) in roles.iter().enumerate() {
+        let map = item.plan.maps()[map_index];
+        let shape = backend.full_ring_setup()?.descriptor().matrix(role)?;
+        if (shape.ring_dimension, shape.rows, shape.columns)
+            != (map.ring_dimension(), map.output_rank(), map.input_width())
+        {
+            return Err(AkitaError::InvalidSetup(
+                "installed compression matrix shape mismatch".into(),
+            ));
+        }
+        let ctx = OperationCtx::for_full_ring(backend, backend.full_ring_prepared(role)?)?;
+        dispatch_for_field!(
+            akita_params::ProtocolDispatchSlot::Compression,
+            F,
+            map.ring_dimension(),
+            |D| execute_chunk::<F, _, Id, D>(
+                &ctx,
+                std::slice::from_mut(&mut item),
+                &[0],
+                map_index
+            )
+        )?;
+    }
+    Ok(CompressionExecutionOutput {
+        id: item.id,
+        witness: CompressionChainWitness::new(item.plan.clone(), item.stages)?,
+        terminal: CompressionTerminalPayload::new(item.plan, item.coefficients)?,
+        relation: CompressionRelationOutput::ExactCoefficientRows,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::opaque::{ComputeBackendSetup, CpuBackend};
     use crate::AkitaProverSetup;
     use akita_params::{SetupMatrixCapacity, SisModulusProfileId};
-    use jolt_field::{Prime128OffsetA7F7, Ring};
+    use jolt_field::{One, Prime128OffsetA7F7, Ring};
 
     type F = Prime128OffsetA7F7;
 
@@ -628,6 +816,55 @@ mod tests {
         assert_eq!(report.quotient_rows, 0);
         assert!(prepared.compression_ntt_cache_bytes() > 0);
         assert!(prepared.ntt_cache_bytes().unwrap() > 0);
+    }
+
+    #[test]
+    fn retained_exact_path_derives_ordinary_quotients_and_rejects_mutations() {
+        let (setup, prepared) = prepared_context(64);
+        let arithmetic_backend = CpuBackend::<F, F>::for_arithmetic_tests();
+        let ctx =
+            OperationCtx::new(&arithmetic_backend, &prepared, setup.expanded.as_ref()).unwrap();
+        let mut exact_input = input(7, 64);
+        exact_input.relation_mode = RingRelationMode::ExactCoefficientRows;
+        let (exact, _) = execute_compression_chains(&ctx, vec![exact_input]).unwrap();
+        let (ordinary, _) = execute_compression_chains(&ctx, vec![input(7, 64)]).unwrap();
+        let witness = &exact[0].witness;
+        let terminal_dimension = witness.plan().maps().last().unwrap().ring_dimension();
+        let terminal = RingVec::from_coeffs_with_ring_dim(
+            exact[0].terminal.coefficients().to_vec(),
+            terminal_dimension,
+        )
+        .unwrap();
+        assert_eq!(witness, &ordinary[0].witness);
+        assert_eq!(exact[0].terminal, ordinary[0].terminal);
+        assert_eq!(
+            derive_retained_compression_quotients(&ctx, witness, &terminal).unwrap(),
+            ordinary[0].relation.quotient_lift().unwrap()
+        );
+
+        for index in 0..witness.stages().len() {
+            let mut stages = witness.stages().to_vec();
+            let stage = &stages[index];
+            let mut bytes = stage.bytes().to_vec();
+            bytes[0] ^= 1;
+            stages[index] = PackedNegativeBinary::from_bytes(stage.map(), bytes).unwrap();
+            let mutated = CompressionChainWitness::new(witness.plan().clone(), stages).unwrap();
+            assert!(derive_retained_compression_quotients(&ctx, &mutated, &terminal).is_err());
+        }
+        let mut wrong_coefficients = terminal.coeffs().to_vec();
+        wrong_coefficients[0] += F::one();
+        let wrong_terminal =
+            RingVec::from_coeffs_with_ring_dim(wrong_coefficients, terminal_dimension).unwrap();
+        assert!(derive_retained_compression_quotients(&ctx, witness, &wrong_terminal).is_err());
+        let wrong_shape = RingVec::from_coeffs_with_ring_dim(
+            terminal.coeffs().to_vec(),
+            terminal_dimension / 2,
+        )
+        .unwrap();
+        assert!(derive_retained_compression_quotients(&ctx, witness, &wrong_shape).is_err());
+        let truncated = RingVec::from_coeffs_with_ring_dim(Vec::<F>::new(), terminal_dimension)
+            .unwrap();
+        assert!(derive_retained_compression_quotients(&ctx, witness, &truncated).is_err());
     }
 
     /// Run with:

@@ -23,6 +23,7 @@ fn relation_mode_signature(value: akita_params::RingRelationMode) -> &'static st
     match value {
         akita_params::RingRelationMode::QuotientLift => "quotient",
         akita_params::RingRelationMode::ReducedEvaluation => "reduced-evaluation",
+        akita_params::RingRelationMode::ExactCoefficientRows => "exact-coefficient-rows",
     }
 }
 
@@ -56,6 +57,12 @@ fn opening_policy_signature(
     security_route: akita_params::InnerCommitSecurityRoute,
 ) -> Result<String, String> {
     let opening = match opening_method {
+        akita_params::OpeningMethod::FullRingScalarExtension { .. } => {
+            let width = opening_method
+                .physical_coefficient_width(extension_degree, d_a)
+                .map_err(|error| format!("derive full-ring geometry: {error}"))?;
+            format!("FULL,E2Nonresidue5,RawCoefficientV1,native={d_a},planes=2,partial={width},quotient=0")
+        }
         akita_params::OpeningMethod::EvaluationTrace => {
             "ET,s=-,h=-,partial=-,quotient=-".to_string()
         }
@@ -205,28 +212,30 @@ pub(super) fn catalog_policy_signature(
         }
         signature.push(']');
     }
-    let terminal_eor = akita_params::extension_opening_reduction_level_bytes(
-        spec.policy
-            .challenge_field_bits()
-            .map_err(|error| format!("derive challenge width: {error}"))?,
-        spec.policy.claim_ext_degree,
-        akita_params::PolynomialGroupLayout::singleton(
-            akita_params::padded_boolean_opening_vars(schedule.terminal.input_witness_len)
-                .map_err(|error| format!("derive terminal opening arity: {error}"))?,
-        ),
-    )
-    .map_err(|error| format!("derive terminal EOR bytes: {error}"))?;
-    let terminal_source = akita_params::CommittedSourceEncoding::for_producer(
-        akita_params::OpeningMethod::EvaluationTrace,
-        spec.policy.claim_ext_degree,
-        schedule.terminal.d_a(),
-        akita_params::padded_boolean_opening_vars(schedule.terminal.input_witness_len)
-            .map_err(|error| format!("derive terminal source arity: {error}"))?,
-        false,
-    );
+    let terminal_eor = if schedule
+        .terminal
+        .opening_method
+        .requires_extension_opening_reduction(spec.policy.claim_ext_degree)
+    {
+        akita_params::extension_opening_reduction_level_bytes(
+            spec.policy
+                .challenge_field_bits()
+                .map_err(|error| format!("derive challenge width: {error}"))?,
+            spec.policy.claim_ext_degree,
+            akita_params::PolynomialGroupLayout::singleton(
+                akita_params::padded_boolean_opening_vars(schedule.terminal.input_witness_len)
+                    .map_err(|error| format!("derive terminal opening arity: {error}"))?,
+            ),
+        )
+        .map_err(|error| format!("derive terminal EOR bytes: {error}"))?
+    } else {
+        0
+    };
+    let terminal_source = schedule.terminal.source_encoding;
     write!(
         signature,
-        "/T[method=ET,src={},eor={terminal_eor},input={},dA={},sec={}]",
+        "/T[method={:?},src={},eor={terminal_eor},input={},dA={},sec={}]",
+        schedule.terminal.opening_method,
         source_encoding_signature(terminal_source),
         schedule.terminal.input_witness_len,
         schedule.terminal.d_a(),

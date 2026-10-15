@@ -49,14 +49,7 @@ fn stream_binds_session_statement_basis_and_eof() {
             .expect("commit");
         #[cfg(feature = "logging-transcript")]
         akita_transcript::clear_thread_events();
-        let proof = scheme
-            .batched_prove(
-                &setup,
-                prove_input::<OneHotCfg>(&point, &[opening], &commitment, hint, scheme.schedules()),
-                &stack,
-                LABEL,
-                BasisMode::Lagrange,
-            )
+        let proof = { let native_setup = &setup; let native_opening = prove_input::<OneHotCfg>(&point, &[opening], &commitment, hint, scheme.schedules()); let native_session = LABEL; let native_basis = BasisMode::Lagrange; akita_pcs::prepare_native_prover_context(native_setup.expanded.descriptor(), scheme.schedules(), &native_opening, native_session, &[], native_basis, 0).and_then(|native_context| scheme.batched_prove(native_setup, native_opening, &stack, native_session, native_context.registry(), native_context.augmentation(), native_basis)) }
             .expect("prove");
         #[cfg(feature = "logging-transcript")]
         let prover_events = akita_transcript::thread_events();
@@ -66,17 +59,12 @@ fn stream_binds_session_statement_basis_and_eof() {
             scheme
                 .verifier(verifier_setup.clone())
                 .and_then(|verifier| {
-                    verifier.batched_verify(
-                        candidate,
-                        session,
-                        verify_input::<OneHotCfg>(
-                            &point,
-                            &[claimed],
-                            &commitment,
-                            scheme.schedules(),
-                        ),
-                        basis,
-                    )
+                    { let native_statement = verify_input::<OneHotCfg>(
+                        &point,
+                        &[claimed],
+                        &commitment,
+                        scheme.schedules(),
+                    ); let native_session = session; let native_basis = basis; akita_pcs::prepare_native_proof_context(verifier.setup().expanded().descriptor(), verifier.schedules(), &native_statement, native_session, &[], native_basis, 0).and_then(|native_context| verifier.batched_verify(candidate, native_session, native_context.registry(), native_context.augmentation(), native_statement, native_basis)) }
                 })
         };
 
@@ -168,6 +156,38 @@ fn stream_binds_session_statement_basis_and_eof() {
                 );
             }
         }
+        // Context is application input, not authority carried by the proof.
+        // Each changed endpoint/history compiles successfully before replay.
+        let verifier = scheme.verifier(verifier_setup.clone()).expect("verifier");
+        let statement = verify_input::<OneHotCfg>(
+            &point, &[opening], &commitment, scheme.schedules(),
+        );
+        for (history, installation_index) in [
+            (b"unapproved inherited history".as_slice(), 0),
+            (&[][..], 1),
+        ] {
+            let context = akita_pcs::prepare_native_proof_context(
+                verifier.setup().expanded().descriptor(), verifier.schedules(), &statement,
+                LABEL, history, BasisMode::Lagrange, installation_index,
+            ).expect("changed tuple has a valid native grammar");
+            assert!(verifier.batched_verify(
+                &proof, LABEL, context.registry(), context.augmentation(),
+                statement.clone(), BasisMode::Lagrange,
+            ).is_err(), "literal history and installation tuple must bind replay");
+        }
+        let mut changed_point = point.clone();
+        changed_point[0] += F::one();
+        let changed_statement = verify_input::<OneHotCfg>(
+            &changed_point, &[opening], &commitment, scheme.schedules(),
+        );
+        let changed_context = akita_pcs::prepare_native_proof_context(
+            verifier.setup().expanded().descriptor(), verifier.schedules(), &changed_statement,
+            LABEL, &[], BasisMode::Lagrange, 0,
+        ).expect("changed source point has a valid native grammar");
+        assert!(verifier.batched_verify(
+            &proof, LABEL, changed_context.registry(), changed_context.augmentation(),
+            changed_statement, BasisMode::Lagrange,
+        ).is_err(), "original public source point must bind replay");
         assert!(verify(
             &proof,
             b"hardening/onehot/different-session",
@@ -222,14 +242,7 @@ fn stream_mutations_reject_without_panicking() {
                 akita_cpu_backend::GroupContext::scheduler_without_precommitted_groups(),
             )
             .expect("commit");
-        let proof = scheme
-            .batched_prove(
-                &setup,
-                prove_input::<DenseCfg>(&point, &[opening], &commitment, hint, scheme.schedules()),
-                &stack,
-                LABEL,
-                BasisMode::Lagrange,
-            )
+        let proof = { let native_setup = &setup; let native_opening = prove_input::<DenseCfg>(&point, &[opening], &commitment, hint, scheme.schedules()); let native_session = LABEL; let native_basis = BasisMode::Lagrange; akita_pcs::prepare_native_prover_context(native_setup.expanded.descriptor(), scheme.schedules(), &native_opening, native_session, &[], native_basis, 0).and_then(|native_context| scheme.batched_prove(native_setup, native_opening, &stack, native_session, native_context.registry(), native_context.augmentation(), native_basis)) }
             .expect("prove");
         for offset in [
             0,
@@ -244,17 +257,12 @@ fn stream_mutations_reject_without_panicking() {
                 scheme
                     .verifier(verifier_setup.clone())
                     .and_then(|verifier| {
-                        verifier.batched_verify(
-                            &mutated,
-                            LABEL,
-                            verify_input::<DenseCfg>(
-                                &point,
-                                &[opening],
-                                &commitment,
-                                scheme.schedules(),
-                            ),
-                            BasisMode::Lagrange,
-                        )
+                        { let native_statement = verify_input::<DenseCfg>(
+                            &point,
+                            &[opening],
+                            &commitment,
+                            scheme.schedules(),
+                        ); let native_session = LABEL; let native_basis = BasisMode::Lagrange; akita_pcs::prepare_native_proof_context(verifier.setup().expanded().descriptor(), verifier.schedules(), &native_statement, native_session, &[], native_basis, 0).and_then(|native_context| verifier.batched_verify(&mutated, native_session, native_context.registry(), native_context.augmentation(), native_statement, native_basis)) }
                     })
             }));
             assert!(matches!(outcome, Ok(Err(_))));

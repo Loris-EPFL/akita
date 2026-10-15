@@ -64,24 +64,12 @@ fn prove_fold_linf_grind_onehot_fixture(num_vars: usize, seed: u64) -> FoldLinfG
             akita_cpu_backend::GroupContext::scheduler_without_precommitted_groups(),
         )
         .expect("commit");
-    let proof = scheme
-        .batched_prove(
-            &setup,
-            prove_input::<OneHotCfg>(&point, &[opening], &commitment, hint, scheme.schedules()),
-            &stack,
-            LABEL,
-            BasisMode::Lagrange,
-        )
+    let proof = { let native_setup = &setup; let native_opening = prove_input::<OneHotCfg>(&point, &[opening], &commitment, hint, scheme.schedules()); let native_session = LABEL; let native_basis = BasisMode::Lagrange; akita_pcs::prepare_native_prover_context(native_setup.expanded.descriptor(), scheme.schedules(), &native_opening, native_session, &[], native_basis, 0).and_then(|native_context| scheme.batched_prove(native_setup, native_opening, &stack, native_session, native_context.registry(), native_context.augmentation(), native_basis)) }
         .expect("prove");
     scheme
         .verifier(verifier_setup.clone())
         .and_then(|verifier| {
-            verifier.batched_verify(
-                &proof,
-                LABEL,
-                verify_input::<OneHotCfg>(&point, &[opening], &commitment, scheme.schedules()),
-                BasisMode::Lagrange,
-            )
+            { let native_statement = verify_input::<OneHotCfg>(&point, &[opening], &commitment, scheme.schedules()); let native_session = LABEL; let native_basis = BasisMode::Lagrange; akita_pcs::prepare_native_proof_context(verifier.setup().expanded().descriptor(), verifier.schedules(), &native_statement, native_session, &[], native_basis, 0).and_then(|native_context| verifier.batched_verify(&proof, native_session, native_context.registry(), native_context.augmentation(), native_statement, native_basis)) }
         })
         .expect("verify");
 
@@ -101,17 +89,12 @@ impl FoldLinfGrindFixture {
         self.scheme
             .verifier(self.verifier_setup.clone())
             .and_then(|verifier| {
-                verifier.batched_verify(
-                    proof,
-                    LABEL,
-                    verify_input::<OneHotCfg>(
-                        &self.point,
-                        &[self.opening],
-                        &self.commitment,
-                        self.scheme.schedules(),
-                    ),
-                    BasisMode::Lagrange,
-                )
+                { let native_statement = verify_input::<OneHotCfg>(
+                    &self.point,
+                    &[self.opening],
+                    &self.commitment,
+                    self.scheme.schedules(),
+                ); let native_session = LABEL; let native_basis = BasisMode::Lagrange; akita_pcs::prepare_native_proof_context(verifier.setup().expanded().descriptor(), verifier.schedules(), &native_statement, native_session, &[], native_basis, 0).and_then(|native_context| verifier.batched_verify(proof, native_session, native_context.registry(), native_context.augmentation(), native_statement, native_basis)) }
             })
     }
 }

@@ -32,7 +32,7 @@ impl<F: Field, E> CpuBackend<F, E> {
         F: Field + CanonicalEncoding + 'static,
     {
         let prepared = self.prepared()?;
-        let expanded = prepared.expanded();
+        let expanded = prepared.expanded()?;
 
         profile.validate_frozen_precommit(F::MODULUS_BITS)?;
         if profile.inner.matrix.sis_modulus_profile().modulus() != field_modulus::<F>()? {

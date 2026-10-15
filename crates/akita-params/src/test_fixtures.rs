@@ -463,3 +463,30 @@ pub fn test_lp() -> CommittedGroupParams {
         .expect("secure terminal test matrix");
     params
 }
+
+/// Literal preserved original RAM profile, independent of its consuming view.
+pub fn original_ram_profile() -> GroupCommitPhaseParams {
+    use crate::sis::{SisMatrixRole, DEFAULT_SIS_SECURITY_POLICY};
+    let matrix_key = |role, bound| crate::SisTableKey {
+        policy: DEFAULT_SIS_SECURITY_POLICY,
+        table_digest: crate::SisTableDigest::CURRENT,
+        modulus_profile: SisModulusProfileId::Q128OffsetA7F7,
+        role,
+        ring_dimension: 128,
+        coeff_linf_bound: bound,
+    };
+    GroupCommitPhaseParams {
+        version: GroupCommitPhaseParams::VERSION,
+        group: PolynomialGroupLayout::singleton(16),
+        blocks: crate::BlockGeometry::new(512, 32, 16),
+        outer_slice_count: crate::CommitmentSliceCount::ONE,
+        inner: crate::RoleParams::new(
+            crate::GadgetDigits::new(5, 26),
+            InnerCommitMatrixParams::try_new_with_min_rank(matrix_key(SisMatrixRole::Inner, 8126340), 832).unwrap(),
+        ),
+        outer: crate::RoleParams::new(
+            crate::GadgetDigits::new(5, 26),
+            OuterCommitMatrixParams::try_new_with_min_rank(matrix_key(SisMatrixRole::Outer, 31), 1248).unwrap(),
+        ),
+    }
+}

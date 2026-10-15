@@ -98,14 +98,7 @@ fn fp32_ext4_l2_pcs_roundtrip_and_stage2_rejections() {
         )
         .expect("L2 prover group")])
         .expect("L2 prover claims");
-        let proof = scheme
-            .batched_prove(
-                &setup,
-                selected_prover_data::<Cfg>(prover_claims, vec![hint], scheme.schedules()),
-                &stack,
-                LABEL,
-                BasisMode::Lagrange,
-            )
+        let proof = { let native_setup = &setup; let native_opening = selected_prover_data::<Cfg>(prover_claims, vec![hint], scheme.schedules()); let native_session = LABEL; let native_basis = BasisMode::Lagrange; akita_pcs::prepare_native_prover_context(native_setup.expanded.descriptor(), scheme.schedules(), &native_opening, native_session, &[], native_basis, 0).and_then(|native_context| scheme.batched_prove(native_setup, native_opening, &stack, native_session, native_context.registry(), native_context.augmentation(), native_basis)) }
             .expect("small-field L2 proof");
 
         let verify = |candidate: &[u8]| {
@@ -119,12 +112,7 @@ fn fp32_ext4_l2_pcs_roundtrip_and_stage2_rejections() {
             scheme
                 .verifier(verifier_setup.clone())
                 .and_then(|verifier| {
-                    verifier.batched_verify(
-                        candidate,
-                        LABEL,
-                        selected_statement::<Cfg>(claims, scheme.schedules()),
-                        BasisMode::Lagrange,
-                    )
+                    { let native_statement = selected_statement::<Cfg>(claims, scheme.schedules()); let native_session = LABEL; let native_basis = BasisMode::Lagrange; akita_pcs::prepare_native_proof_context(verifier.setup().expanded().descriptor(), verifier.schedules(), &native_statement, native_session, &[], native_basis, 0).and_then(|native_context| verifier.batched_verify(candidate, native_session, native_context.registry(), native_context.augmentation(), native_statement, native_basis)) }
                 })
         };
         verify(&proof).expect("verify native small-field L2 PCS proof");
@@ -197,14 +185,7 @@ fn fp32_nv20_shipped_terminal_route_roundtrip_and_rejections() {
         )
         .expect("terminal L2 prover group")])
         .expect("terminal L2 prover claims");
-        let proof = scheme
-            .batched_prove(
-                &setup,
-                selected_prover_data::<Cfg>(prover_claims, vec![hint], scheme.schedules()),
-                &stack,
-                LABEL,
-                BasisMode::Lagrange,
-            )
+        let proof = { let native_setup = &setup; let native_opening = selected_prover_data::<Cfg>(prover_claims, vec![hint], scheme.schedules()); let native_session = LABEL; let native_basis = BasisMode::Lagrange; akita_pcs::prepare_native_prover_context(native_setup.expanded.descriptor(), scheme.schedules(), &native_opening, native_session, &[], native_basis, 0).and_then(|native_context| scheme.batched_prove(native_setup, native_opening, &stack, native_session, native_context.registry(), native_context.augmentation(), native_basis)) }
             .expect("shipped terminal proof");
 
         let verify = |candidate: &[u8]| {
@@ -218,12 +199,7 @@ fn fp32_nv20_shipped_terminal_route_roundtrip_and_rejections() {
             scheme
                 .verifier(verifier_setup.clone())
                 .and_then(|verifier| {
-                    verifier.batched_verify(
-                        candidate,
-                        LABEL,
-                        selected_statement::<Cfg>(claims, scheme.schedules()),
-                        BasisMode::Lagrange,
-                    )
+                    { let native_statement = selected_statement::<Cfg>(claims, scheme.schedules()); let native_session = LABEL; let native_basis = BasisMode::Lagrange; akita_pcs::prepare_native_proof_context(verifier.setup().expanded().descriptor(), verifier.schedules(), &native_statement, native_session, &[], native_basis, 0).and_then(|native_context| verifier.batched_verify(candidate, native_session, native_context.registry(), native_context.augmentation(), native_statement, native_basis)) }
                 })
         };
         verify(&proof).expect("verify shipped terminal proof");

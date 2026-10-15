@@ -200,7 +200,7 @@ impl GroupCommitPhaseParams {
     /// The block triple and both `(basis, depth)` pairs are contiguous here.
     /// The descriptor order is geometry, then `basis, depth, matrix` for each
     /// role.
-    pub(crate) fn append_descriptor_bytes(&self, bytes: &mut Vec<u8>) {
+    pub fn append_descriptor_bytes(&self, bytes: &mut Vec<u8>) {
         bytes.push(self.version);
         push_usize(bytes, self.group.num_vars());
         push_usize(bytes, self.group.num_polynomials());
@@ -368,10 +368,12 @@ pub struct ScheduleLookupKey {
     pub final_group: PolynomialGroupLayout,
     /// Previously committed groups in caller-supplied transcript order.
     pub precommitteds: Vec<GroupCommitPhaseParams>,
+    /// REQUIRED consuming views, prefix first and final last.
+    pub source_views: Vec<crate::SourceOpeningView>,
 }
 
 /// Allocation-cached ordering key for deterministic schedule lookup and emission.
-pub type ScheduleLookupOrderKey = (usize, usize, usize, Vec<Vec<u8>>);
+pub type ScheduleLookupOrderKey = (usize, usize, usize, Vec<Vec<u8>>, Vec<u8>);
 
 /// A non-empty ordered prefix of groups committed before a final group.
 ///
@@ -411,18 +413,40 @@ impl ScheduleLookupKey {
         Self {
             final_group,
             precommitteds: Vec::new(),
+            source_views: vec![crate::SourceOpeningView::Decoded],
         }
+    }
+
+    pub fn with_views(
+        final_group: PolynomialGroupLayout,
+        precommitteds: Vec<GroupCommitPhaseParams>,
+        source_views: Vec<crate::SourceOpeningView>,
+    ) -> Result<Self, AkitaError> {
+        let key = Self { final_group, precommitteds, source_views };
+        key.opening_layout()?;
+        Ok(key)
+    }
+
+    pub fn decoded(
+        final_group: PolynomialGroupLayout,
+        precommitteds: Vec<GroupCommitPhaseParams>,
+    ) -> Self {
+        let source_views = vec![crate::SourceOpeningView::Decoded; precommitteds.len() + 1];
+        Self { final_group, precommitteds, source_views }
     }
 
     /// Canonical ordered bytes used for schedule-key identity tests and caches.
     pub fn canonical_descriptor_bytes(&self) -> Vec<u8> {
         let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"akita/opening-key/v2");
         push_usize(&mut bytes, self.final_group.num_vars());
         push_usize(&mut bytes, self.final_group.num_polynomials());
         push_usize(&mut bytes, self.precommitteds.len());
         for descriptor in &self.precommitteds {
             descriptor.append_descriptor_bytes(&mut bytes);
         }
+        push_usize(&mut bytes, self.source_views.len());
+        bytes.extend(self.source_views.iter().map(|view| view.tag()));
         bytes
     }
 
@@ -436,30 +460,34 @@ impl ScheduleLookupKey {
                 .iter()
                 .map(GroupCommitPhaseParams::canonical_descriptor_bytes)
                 .collect(),
+            self.source_views.iter().map(|view| view.tag()).collect(),
         )
     }
 
     /// Build a multi-group opening layout from this schedule lookup key.
     pub fn opening_layout(&self) -> Result<OpeningClaimsLayout, AkitaError> {
+        for (profile, &view) in self.precommitteds.iter().zip(&self.source_views) {
+            view.validate_source_profile(profile)?;
+        }
         let mut groups: Vec<PolynomialGroupLayout> = self
             .precommitteds
             .iter()
             .map(|layout| layout.group)
             .collect();
         groups.push(self.final_group);
-        OpeningClaimsLayout::from_groups(groups)
+        OpeningClaimsLayout::from_groups_and_views(groups, self.source_views.clone())
     }
 
-    /// Maximum opening arity across the final and precommitted groups.
-    ///
-    /// This is the maximum group-local opening/EOR domain. It is intentionally
-    /// distinct from `final_group.num_vars()`, which remains the source arity
-    /// used to size the final commitment and root witness.
+    /// Maximum source arity; raw query arity is available separately.
     pub fn max_num_vars(&self) -> usize {
         self.precommitteds
             .iter()
             .map(|descriptor| descriptor.group.num_vars())
             .fold(self.final_group.num_vars(), usize::max)
+    }
+
+    pub fn max_point_num_vars(&self) -> Result<usize, AkitaError> {
+        Ok(self.opening_layout()?.max_point_num_vars())
     }
 
     /// Total number of polynomials across the final and precommitted groups.
@@ -483,11 +511,12 @@ impl ScheduleLookupKey {
         max_num_vars: usize,
         max_num_batched_polys: usize,
     ) -> Result<bool, AkitaError> {
-        Ok(self.max_num_vars() <= max_num_vars && self.num_polynomials()? <= max_num_batched_polys)
+        Ok(self.max_point_num_vars()? <= max_num_vars && self.num_polynomials()? <= max_num_batched_polys)
     }
 
     /// Validate per-group metadata.
     pub fn validate(&self, field_bits: u32) -> Result<(), AkitaError> {
+        self.opening_layout()?.check()?;
         self.final_group.validate()?;
         if self.final_group.num_vars() == 0 {
             return Err(AkitaError::InvalidSetup(

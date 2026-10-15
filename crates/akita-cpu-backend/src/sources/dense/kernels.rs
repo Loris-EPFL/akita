@@ -184,6 +184,7 @@ where
     E: ExtField<F> + akita_types::FpExtEncoding<F> + MulBaseUnreduced<F>,
 {
     let point = fused_weights.point();
+    SubringCoefficientPackingPlan { point }.validate_decoded()?;
     source
         .polys
         .iter()
@@ -230,6 +231,7 @@ where
         source: DenseBatchView<'_, F, D>,
         plan: SubringCoefficientPackingPlan<'_, E>,
     ) -> Result<Vec<SubringCoefficientPackingPartials<F>>, AkitaError> {
+        plan.validate_decoded()?;
         let fused_weights = FusedPackingWeights::new(plan.point)?;
         dense_coefficient_packing_partials(source, &fused_weights)
     }

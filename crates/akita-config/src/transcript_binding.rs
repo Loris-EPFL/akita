@@ -13,8 +13,8 @@ use akita_params::{
     BasisMode, FoldSchedule, GrindingPlan, OpeningClaimsLayout, OpeningScheduleSelection,
 };
 use akita_types::{
-    AkitaInstanceDescriptor, AkitaSetupDescriptor, AlgebraSection, CallSection, FpExtEncoding,
-    PlanSection, SetupSection, TranscriptGrindingBinding,
+    AkitaInstanceDescriptor, AkitaSetupDescriptor, AlgebraSection, CallSection, PlanSection,
+    SetupSection, TranscriptGrindingBinding,
 };
 use jolt_field::{CanonicalEncoding, Field};
 
@@ -45,7 +45,6 @@ pub fn transcript_instance_descriptor<F, Cfg>(
 where
     F: Field + CanonicalEncoding,
     Cfg: CommitmentConfig<Field = F>,
-    Cfg::ExtField: FpExtEncoding<F>,
 {
     if !akita_transcript::field_sampling_is_certified(
         F::NUM_BYTES,

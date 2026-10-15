@@ -1,10 +1,18 @@
 //! Shared Akita wire values and protocol math.
 
+pub use akita_sumcheck::SumcheckRole;
+
 mod eor_sites;
 pub mod extension_opening_reduction;
 pub mod field_reduction;
 mod fold_sites;
+pub mod full_ring;
+pub mod full_ring_accumulation;
+pub mod full_ring_root;
+pub mod full_ring_terminal;
 pub mod instance_descriptor;
+#[cfg(test)]
+mod indexed_test_support;
 mod l2_sites;
 pub mod ntt_cache;
 pub mod opening_claims;
@@ -44,12 +52,18 @@ pub use ntt_cache::{
     PreparedVerifierNttCacheBinding, PreparedVerifierNttCacheMetadata, ProtocolCrtNttParams,
     PREPARED_VERIFIER_NTT_CACHE_MAX_BYTES,
 };
+pub use proof::setup_roles::{
+    AkitaSetupIdentity, FullRingCommitmentRoles, FullRingLevelRoles, FullRingMatrixDescriptor,
+    FullRingMatrixRole, FullRingSetupDescriptor, FullRingSetupFamily, FullRingSetupSource,
+    FullRingSourceId, FullRingSuccessor, InstalledFullRingSetup,
+};
 pub use proof::{
     assemble_compressed_relation_rhs, assemble_relation_rhs, build_compression_relation_weights,
     build_reduced_compression_relation_weights, build_terminal_response_from_payload,
     canonical_extension_opening_reduction_shape, coefficient_packing_relation_events,
-    decode_terminal_z_golomb_payload, derive_public_matrix_prefix, draw_group_fold_challenges,
+    decode_terminal_z_golomb_payload, derive_public_matrix_prefix, group_fold_challenges_from_group, group_fold_challenges_from_level, plan_group_fold_challenges,
     emit_witness_e_planes, emit_witness_t_planes, generate_relation_rhs,
+    encode_opening_endpoint_binding,
     prepare_coefficient_packing_batch_semantics, prepare_opening_point,
     relation_claim_from_compressed_rhs_extension, relation_claim_from_layout_extension,
     relation_claim_from_rows, relation_claim_from_rows_extension, relation_rhs_coeff_len,
@@ -60,7 +74,7 @@ pub use proof::{
     CoefficientPackingBatchSemanticInputs, CoefficientPackingBatchSemantics,
     CoefficientPackingChallenges, CoefficientPackingGroupSemantics, Commitment, CommittedGroup,
     CompressionRelationWeights, DigitBlockIter, DigitBlocks, ExtensionOpeningReductionShape,
-    GroupBatchStatement, GroupFoldChallenges, NegativeBinarySupport, OpeningClaims, OpeningFamily,
+    GroupBatchStatement, GroupFoldChallengePlan, GroupFoldChallenges, NegativeBinarySupport, OpeningClaims, OpeningFamily,
     OpeningPoints, PhysicalResponsePlan, PolynomialGroupClaims, PreparedOpeningPoint,
     PreparedRingMultiplier, PublicMatrixDerivation, ReducedCompressionRelationWeights,
     RelationRangeImageGroupPlan, RelationRangeImagePlan, RelationWeightContribution,
@@ -100,6 +114,7 @@ pub use trace_weight::{
     EvaluationTraceGroupParameters, EvaluationTraceInputs,
 };
 pub use transcript_grinding::{
+    fold_response_record, grinding_records, grinding_sumcheck_site,
     GrindingReplay, GrindingSumcheckProver, GrindingSumcheckVerifier, ProofAcceptance,
     ProverGrinding, VerifierGrinding,
 };

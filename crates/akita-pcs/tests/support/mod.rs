@@ -132,6 +132,11 @@ fn universal_fold_digit_depth(
             akita_params::OpeningMethod::SubringCoefficientPacking {
                 challenge_subring_dimension,
             } => challenge_subring_dimension,
+            akita_params::OpeningMethod::FullRingScalarExtension { .. } => {
+                return Err(AkitaError::InvalidSetup(
+                    "legacy synthetic schedules do not size full-ring responses".into(),
+                ));
+            }
         },
         num_claims,
         num_live_ring_elements_per_claim: params.num_live_ring_elements_per_claim,
@@ -310,10 +315,7 @@ where
         let successor_template = match base.schedule().recursive_folds.first() {
             Some(successor) => successor.clone(),
             None => {
-                let grouped_key = ScheduleLookupKey {
-                    final_group: key.final_group,
-                    precommitteds: vec![base.profiles().final_group],
-                };
+                let grouped_key = ScheduleLookupKey::decoded(key.final_group, vec![base.profiles().final_group]);
                 catalog
                     .resolve_key(&grouped_key)?
                     .schedule()

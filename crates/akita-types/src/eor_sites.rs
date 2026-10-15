@@ -46,6 +46,9 @@ where
     E: ExtField<F>,
 {
     opening_batch.check()?;
+    if opening_batch.views().contains(&akita_params::SourceOpeningView::OriginalRamPlanesV1) {
+        return Err(AkitaError::InvalidSetup("raw RAM views cannot enter extension opening reduction".into()));
+    }
     let num_claims = opening_batch.num_total_polynomials();
     if openings.len() != num_claims {
         return Err(AkitaError::InvalidProof);
@@ -189,18 +192,47 @@ mod tests {
         (plan, layout, openings, partials, final_claims)
     }
 
+    fn context(
+        plan: &GrindingPlan,
+        layout: &OpeningClaimsLayout,
+        partials: usize,
+    ) -> akita_transcript::InstalledContext {
+        use akita_transcript::ProtocolMessageKind;
+        let mut events = vec![
+            crate::indexed_test_support::extension_message::<F, E>(
+                eor_site(3, STAGE_OPENINGS), ProtocolMessageKind::PublicValue, layout.num_total_polynomials(),
+            ),
+            crate::indexed_test_support::extension_message::<F, E>(
+                eor_site(3, STAGE_PARTIALS), ProtocolMessageKind::ProofAtoms, partials,
+            ),
+        ];
+        for (run, count) in plan.runs().iter().zip([2, layout.num_total_polynomials()]) {
+            crate::indexed_test_support::grinding(&mut events, run.site(), run.grind_bits(), run.nonce_bits());
+            for index in 0..count {
+                let mut site = run.site().site_id(0);
+                site.group = index as u32;
+                crate::indexed_test_support::field_draw::<F, E>(&mut events, site);
+            }
+        }
+        events.push(crate::indexed_test_support::extension_message::<F, E>(
+            eor_site(3, STAGE_FINAL_CLAIMS), ProtocolMessageKind::ProofAtoms, layout.num_total_polynomials(),
+        ));
+        crate::indexed_test_support::context(b"native-eor", events)
+    }
+
     #[test]
     fn eor_grammar_roundtrips_without_structured_proof() {
         let level = 3;
         let (plan, layout, openings, partials, mut final_claims) = fixture();
-        let state = new_prover_channel(b"native-eor", b"fixture").unwrap();
+        let context = context(&plan, &layout, partials.len());
+        let state = new_prover_channel(&context).unwrap();
         let mut prover = ProverGrinding::new(state, &plan);
         let prover_prefix =
             eor_prefix::<F, E, _>(&mut prover, &layout, &openings, partials, level).unwrap();
         eor_final_claims::<F, E, _>(&mut prover, &layout, &mut final_claims, level).unwrap();
         let proof = prover.finish().unwrap();
 
-        let state = new_verifier_channel(b"native-eor", b"fixture", &proof).unwrap();
+        let state = new_verifier_channel(&context, &proof).unwrap();
         let mut verifier = VerifierGrinding::new(state, &plan);
         let verifier_prefix = eor_prefix::<F, E, _>(
             &mut verifier,
@@ -221,7 +253,8 @@ mod tests {
     fn eor_rejects_truncation_before_final_claims() {
         let level = 3;
         let (plan, layout, openings, partials, mut final_claims) = fixture();
-        let state = new_prover_channel(b"native-eor", b"fixture").unwrap();
+        let context = context(&plan, &layout, partials.len());
+        let state = new_prover_channel(&context).unwrap();
         let mut prover = ProverGrinding::new(state, &plan);
         let partial_count = partials.len();
         eor_prefix::<F, E, _>(&mut prover, &layout, &openings, partials, level).unwrap();
@@ -229,7 +262,7 @@ mod tests {
         let mut proof = prover.finish().unwrap();
         proof.pop();
 
-        let state = new_verifier_channel(b"native-eor", b"fixture", &proof).unwrap();
+        let state = new_verifier_channel(&context, &proof).unwrap();
         let mut verifier = VerifierGrinding::new(state, &plan);
         eor_prefix::<F, E, _>(
             &mut verifier,

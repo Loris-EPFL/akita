@@ -43,7 +43,7 @@ where
         1,
         16,
         0,
-    ));
+    ))?;
     let mut integer = U128Atom::new(response_l2_sq);
     state.exchange(&mut integer)?;
     exchange_extension_group::<F, E, _>(state, site(level, ROLE_SUBCLAIMS), subclaims)?;
@@ -88,13 +88,20 @@ mod tests {
         .unwrap();
         let mut subclaims = [E::from_u64(3), E::from_u64(5)];
         let mut virtuals = [E::from_u64(8), E::from_u64(13), E::from_u64(21)];
-        let state = new_prover_channel(b"native-l2", b"fixture").unwrap();
+        let context = crate::indexed_test_support::context(b"native-l2", vec![
+            akita_transcript::InstalledEvent::Message(ProtocolContextRecord::new(
+                site(4, ROLE_INTEGER).to_bytes(), ProtocolMessageKind::ProofAtoms as u32, 1, 16, 0,
+            )),
+            crate::indexed_test_support::extension_message::<F, E>(site(4, ROLE_SUBCLAIMS), ProtocolMessageKind::ProofAtoms, 2),
+            crate::indexed_test_support::extension_message::<F, E>(site(4, ROLE_VIRTUAL_EVALUATIONS), ProtocolMessageKind::ProofAtoms, 3),
+        ]);
+        let state = new_prover_channel(&context).unwrap();
         let mut prover = ProverGrinding::new(state, &plan);
         l2_prefix::<F, E, _>(&mut prover, 4, u128::MAX - 9, &mut subclaims).unwrap();
         l2_virtual_evaluations::<F, E, _>(&mut prover, 4, &mut virtuals).unwrap();
         let proof = prover.finish().unwrap();
 
-        let state = new_verifier_channel(b"native-l2", b"fixture", &proof).unwrap();
+        let state = new_verifier_channel(&context, &proof).unwrap();
         let mut verifier = VerifierGrinding::new(state, &plan);
         let mut received_subclaims = [E::zero(); 2];
         assert_eq!(

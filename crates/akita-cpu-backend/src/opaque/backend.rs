@@ -187,6 +187,8 @@ impl<T: Send + Sync> SetupPrefixCache<T> {
 pub struct CpuBackend<F: Field, E> {
     identity: Arc<BackendIdentity>,
     prepared: Option<CpuPreparedSetup<F>>,
+    full_ring: Option<Arc<akita_types::InstalledFullRingSetup<F>>>,
+    full_ring_prepared: BTreeMap<akita_types::FullRingMatrixRole, CpuPreparedSetup<F>>,
     max_cached_ring_switch_elements: usize,
     /// Derived setup-prefix material, memoized for the life of this backend.
     ///
@@ -237,9 +239,78 @@ impl<F: Field, E> CpuBackend<F, E> {
         Ok(Self {
             identity: BackendIdentity::new(digest)?,
             prepared: Some(CpuPreparedSetup::new(expanded)),
+            full_ring: None,
+            full_ring_prepared: BTreeMap::new(),
             max_cached_ring_switch_elements,
             setup_prefix_cache: SetupPrefixCache::default(),
             extension: PhantomData,
+        })
+    }
+
+    /// Own authenticated full-ring material and its original source registry.
+    /// Native prefix roles share one prepared allocation and its NTT caches.
+    pub fn from_full_ring_setup(
+        setup: Arc<akita_types::InstalledFullRingSetup<F>>,
+    ) -> Result<Self, AkitaError>
+    where
+        F: CanonicalEncoding,
+    {
+        if !akita_params::SisModulusProfileId::Q128OffsetA7F7
+            .matches_modulus(akita_params::field_modulus::<F>()?)
+        {
+            return Err(AkitaError::InvalidSetup(
+                "installed full-ring setup requires the selected K field".into(),
+            ));
+        }
+        let mut roles = BTreeMap::new();
+        let prepared = if let Some(expanded) = setup.shared_prefix() {
+            Some(CpuPreparedSetup::new(expanded.clone()))
+        } else {
+            for matrix in setup.descriptor().matrices() {
+                roles.insert(
+                    matrix.role,
+                    CpuPreparedSetup::from_full_ring(&setup, matrix.role)?,
+                );
+            }
+            None
+        };
+        Ok(Self {
+            identity: BackendIdentity::new(setup.descriptor().installation_id())?,
+            prepared,
+            full_ring: Some(setup),
+            full_ring_prepared: roles,
+            max_cached_ring_switch_elements: Self::DEFAULT_MAX_CACHED_RING_SWITCH_ELEMENTS,
+            setup_prefix_cache: SetupPrefixCache::default(),
+            extension: PhantomData,
+        })
+    }
+
+    /// Borrow the original installed allocation, rejecting legacy setup.
+    /// Public verifier metadata may retain this Arc without copying matrices or
+    /// retaining the backend's private source/session state.
+    pub fn full_ring_setup(
+        &self,
+    ) -> Result<&Arc<akita_types::InstalledFullRingSetup<F>>, AkitaError> {
+        self.full_ring.as_ref().ok_or_else(|| {
+            AkitaError::InvalidSetup(
+                "backend does not own an installed full-ring role registry".into(),
+            )
+        })
+    }
+
+    /// Validate the original role and borrow its setup-owned prepared arithmetic.
+    pub fn full_ring_prepared(
+        &self,
+        role: akita_types::FullRingMatrixRole,
+    ) -> Result<&CpuPreparedSetup<F>, AkitaError> {
+        self.full_ring_setup()?.descriptor().matrix(role)?;
+        if let Some(prepared) = &self.prepared {
+            return Ok(prepared);
+        }
+        self.full_ring_prepared.get(&role).ok_or_else(|| {
+            AkitaError::InvalidSetup(
+                "backend does not own the requested full-ring matrix role".into(),
+            )
         })
     }
 
@@ -316,7 +387,8 @@ impl<F: Field, E> CpuBackend<F, E> {
             self.identity.next_operation_id()?,
             session.scope_lease(),
         )
-        .with_group(context.group_index()))
+        .with_group(context.group_index())
+        .with_occurrence(context.occurrence()))
     }
     pub(crate) fn validate_binding(&self, binding: &OperationBinding) -> Result<(), AkitaError> {
         self.validate_leased_binding(binding, binding.scope_lease())
@@ -336,7 +408,8 @@ impl<F: Field, E> CpuBackend<F, E> {
             binding.scope_id(),
             binding.fold_level(),
             binding.group_index(),
-        )
+        )?;
+        lease.validate_occurrence(binding.occurrence(), binding.fold_level())
     }
     pub(crate) fn next_binding(
         &self,
@@ -350,12 +423,16 @@ impl<F: Field, E> CpuBackend<F, E> {
         parent: OperationBinding,
     ) -> Result<OperationBinding, AkitaError> {
         self.validate_binding(&parent)?;
+        let operation = self.identity.next_operation_id()?;
+        if let Some(staged) = parent.scope_lease().stage_successor(&parent, operation)? {
+            return Ok(staged);
+        }
         let level = parent
             .fold_level()
             .checked_add(1)
             .ok_or_else(|| AkitaError::Internal("fold level overflow".into()))?;
         let next = parent
-            .for_level_operation(level, self.identity.next_operation_id()?)
+            .for_level_operation(level, operation)
             .with_group(None);
         self.validate_binding(&next)?;
         Ok(next)
@@ -365,6 +442,18 @@ impl<F: Field, E> CpuBackend<F, E> {
     where
         F: CanonicalEncoding,
     {
+        if self.full_ring.is_some() {
+            return self
+                .full_ring_prepared
+                .values()
+                .try_fold(0usize, |total, prepared| {
+                    total
+                        .checked_add(prepared.drop_built_ntt_slots()?)
+                        .ok_or_else(|| {
+                            AkitaError::Internal("released cache byte count overflow".into())
+                        })
+                });
+        }
         #[cfg(test)]
         if self.prepared.is_none() {
             return Ok(0);
@@ -410,6 +499,8 @@ impl<F: Field, E> CpuBackend<F, E> {
         Ok(Self {
             identity: BackendIdentity::new([0; 32])?,
             prepared: None,
+            full_ring: None,
+            full_ring_prepared: BTreeMap::new(),
             max_cached_ring_switch_elements,
             setup_prefix_cache: SetupPrefixCache::default(),
             extension: PhantomData,

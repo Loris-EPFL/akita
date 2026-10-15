@@ -131,8 +131,7 @@ fn dense_i16_commit_matches_schoolbook_composition_inner() {
             );
         }
         let matrix = prepared
-            .expanded
-            .shared_matrix()
+            .matrix()
             .ring_view::<D>(n_a, row_width)
             .expect("setup matrix view");
         let expected: Vec<_> = matrix

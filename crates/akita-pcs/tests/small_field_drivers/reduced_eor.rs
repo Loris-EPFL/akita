@@ -22,12 +22,7 @@ fn verify(
         .scheme
         .verifier(roundtrip.verifier_setup.clone())
         .and_then(|verifier| {
-            verifier.batched_verify(
-                proof,
-                label,
-                GroupBatchStatement::new(roundtrip.selection, claims)?,
-                BasisMode::Lagrange,
-            )
+            { let native_statement = GroupBatchStatement::new(roundtrip.selection, claims)?; let native_session = label; let native_basis = BasisMode::Lagrange; akita_pcs::prepare_native_proof_context(verifier.setup().expanded().descriptor(), verifier.schedules(), &native_statement, native_session, &[], native_basis, 0).and_then(|native_context| verifier.batched_verify(proof, native_session, native_context.registry(), native_context.augmentation(), native_statement, native_basis)) }
         })
 }
 

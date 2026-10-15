@@ -757,7 +757,7 @@ fn packing_metadata_exposes_canonical_backend_factors() {
             .collect::<Vec<_>>()
     );
     assert_eq!(
-        semantics.witness_gadget(),
+        semantics.source_opening_weights(),
         witness_gadget
             .into_iter()
             .map(E4::lift_base)

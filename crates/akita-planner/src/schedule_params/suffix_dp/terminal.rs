@@ -77,8 +77,44 @@ pub(crate) fn terminal_direct_suffix_cost(
             "terminal direct response must be a scalar flat fold".to_string(),
         ));
     }
+    if terminal_lp.opening_method().is_full_ring_scalar_extension() {
+        let mut terminal =
+            akita_params::TerminalFoldParams::from_expanded_group(terminal_lp.clone());
+        terminal.input_witness_len = input_witness_len;
+        terminal.response_codec =
+            akita_params::TerminalResponseCodec::full_ring(terminal.blocks.live_blocks)?;
+        let akita_params::TerminalResponseCodec::SignedFixedWidth {
+            coefficient_bound, ..
+        } = terminal.response_codec
+        else {
+            return Err(AkitaError::InvalidSetup(
+                "full-ring terminal codec mismatch".into(),
+            ));
+        };
+        terminal.response_shape = TerminalResponseShape::derive(&terminal, coefficient_bound)?;
+        terminal.validate_opening_execution(policy.claim_ext_degree)?;
+        let bytes = terminal.fixed_payload_bytes(field_bits)?;
+        return Ok((
+            CandidateTerminalResponse {
+                sparse_challenge_config: terminal.fold_challenge_config,
+                response_shape: terminal.response_shape.clone(),
+                params: terminal,
+                input_witness_len,
+                estimated_direct_payload_bytes: 0,
+                estimated_payload_bytes: bytes,
+            },
+            bytes,
+        ));
+    }
     let (mut terminal_params, certified_linf_cap) =
         akita_params::TerminalFoldParams::try_from_expanded_group(terminal_lp.clone())?;
+    terminal_params.source_encoding = akita_params::CommittedSourceEncoding::for_producer(
+        terminal_params.opening_method,
+        policy.claim_ext_degree,
+        terminal_params.d_a(),
+        0,
+        false,
+    );
     let mut sparse_challenge_config = terminal_lp.fold_challenge_config();
     if route_guide != Some(CandidateInnerRoute::Linf) {
         if let Some(l2_challenge) =

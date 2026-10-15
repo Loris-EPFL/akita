@@ -62,6 +62,7 @@ where
                 Some((group_index, point))
             }
             PreparedFoldOpeningPoint::EvaluationTrace(_) => None,
+            PreparedFoldOpeningPoint::FullRingScalarExtension(never) => match *never {},
         })
         .collect::<Vec<_>>();
     let coefficient_packing_batch = if prepared_packing_points.is_empty() {

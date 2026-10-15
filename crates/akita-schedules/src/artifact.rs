@@ -165,12 +165,9 @@ impl ValidatedScheduleCatalog {
             .iter()
             .enumerate()
             .map(|(index, row)| {
-                (
-                    key_for_profiles(row.profiles()).canonical_order_key(),
-                    index,
-                )
+                Ok((row.lookup_key()?.canonical_order_key(), index))
             })
-            .collect::<Vec<_>>();
+            .collect::<Result<Vec<_>, AkitaError>>()?;
         rows_by_key.sort_by(|(left_key, left_index), (right_key, right_index)| {
             left_key.cmp(right_key).then_with(|| {
                 resolved[*left_index]
@@ -384,12 +381,17 @@ impl ValidatedScheduleCatalog {
         self.resolve_key_matching(key, None)
     }
 
-    /// Resolve the canonical honest prover row for exact committed profiles.
+    /// Resolve exact original profiles and explicit ordered consuming views.
+    /// There is no producer-only lookup or decoded retry for a raw request.
     pub fn resolve_profiles(
         &self,
         profiles: &CommittedGroupBatchProfile,
+        source_views: &[akita_params::SourceOpeningView],
     ) -> Result<&ResolvedScheduleRow, AkitaError> {
-        self.resolve_key_matching(&key_for_profiles(profiles), Some(profiles))
+        let key = ScheduleLookupKey::with_views(
+            profiles.final_group.group, profiles.precommitteds.clone(), source_views.to_vec(),
+        )?;
+        self.resolve_key_matching(&key, Some(profiles))
     }
 
     fn resolve_key_matching(
@@ -397,6 +399,7 @@ impl ValidatedScheduleCatalog {
         key: &ScheduleLookupKey,
         exact_profiles: Option<&CommittedGroupBatchProfile>,
     ) -> Result<&ResolvedScheduleRow, AkitaError> {
+        key.opening_layout()?;
         let order_key = key.canonical_order_key();
         let row_for_index = |row_index: usize| {
             self.rows_by_digest.get(row_index).ok_or_else(|| {
@@ -459,6 +462,13 @@ impl Serialize for ScheduleCatalogArtifactRowsRef<'_> {
 #[derive(Serialize)]
 struct ScheduleCatalogArtifactRowRefV1<'a> {
     schedule: &'a FoldSchedule,
+}
+
+pub(crate) fn encoded_schedule_row_bytes(schedule: &FoldSchedule) -> Result<usize, AkitaError> {
+    encoded_row_token_with_limit(
+        &ScheduleCatalogArtifactRowRefV1 { schedule },
+        MAX_TRUSTED_SCHEDULE_ARTIFACT_ROW_BYTES,
+    ).map(|bytes| bytes.len())
 }
 
 fn encode_artifact(artifact: &impl Serialize) -> Result<Vec<u8>, AkitaError> {
@@ -727,12 +737,6 @@ fn validate_family_name(family_name: &str) -> Result<(), AkitaError> {
     Ok(())
 }
 
-fn key_for_profiles(profiles: &CommittedGroupBatchProfile) -> ScheduleLookupKey {
-    ScheduleLookupKey {
-        final_group: profiles.final_group.group,
-        precommitteds: profiles.precommitteds.clone(),
-    }
-}
 
 fn catalog_digest(
     family_name: &str,
@@ -761,6 +765,13 @@ fn validate_schedule_challenge_hooks(
                     uses_l2: bool,
                     position: ScheduleGroupPosition| {
         let expected = match method {
+            akita_params::OpeningMethod::FullRingScalarExtension { .. } => {
+                method.physical_coefficient_width(2, ring_dimension)?;
+                if uses_l2 {
+                    return Err(AkitaError::InvalidSetup("full-ring family forbids L2".into()));
+                }
+                akita_params::FULL_RING_FOLD_CHALLENGE
+            }
             akita_params::OpeningMethod::SubringCoefficientPacking {
                 challenge_subring_dimension,
             } => SparseChallengeConfig::production_for_ring_dim(challenge_subring_dimension)
@@ -817,7 +828,7 @@ fn validate_schedule_challenge_hooks(
             position, params, ..
         } => validate(
             params.fold_challenge_config,
-            akita_params::OpeningMethod::EvaluationTrace,
+            params.opening_method,
             params.d_a(),
             matches!(
                 params.inner.matrix.security_route(),

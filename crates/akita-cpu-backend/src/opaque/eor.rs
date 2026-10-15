@@ -93,6 +93,9 @@ where
         layout: &OpeningClaimsLayout,
         groups: &[EorGroupRequest<'_, E, Self::CommitmentHandle, Self::WitnessHandle>],
     ) -> Result<PreparedEor<E, Self::EorPreparationHandle>, AkitaError> {
+        if layout.views().iter().any(|&view| view != akita_params::SourceOpeningView::Decoded) {
+            return Err(AkitaError::InvalidInput("EOR rejects original RAM plane opening views".into()));
+        }
         let binding = self.binding(session, context)?;
         match binding.scope_lease().proof_plan() {
             Ok((schedule, root_layout)) => {
@@ -112,13 +115,7 @@ where
                         .ok_or_else(|| {
                             AkitaError::Internal("admitted EOR recursive fold is missing".into())
                         })?;
-                    OpeningClaimsLayout::from_groups(
-                        step.params
-                            .groups()
-                            .iter()
-                            .map(|group| group.profile.group)
-                            .collect(),
-                    )?
+                    step.params.opening_layout_for_final_group(step.params.group())?
                 };
                 if *layout != expected {
                     return Err(AkitaError::InvalidInput(
@@ -173,11 +170,16 @@ where
                     }
                     (
                         RetainedOpeningSource::Commitment(handle.committed.clone()),
-                        handle.committed.source.extension(
-                            self,
-                            group.ring_dimension,
-                            group.point,
-                        )?,
+                        handle
+                            .committed
+                            .source
+                            .legacy()
+                            .ok_or_else(|| {
+                                AkitaError::InvalidInput(
+                                    "source was not admitted with legacy EOR capability".into(),
+                                )
+                            })?
+                            .extension(self, group.ring_dimension, group.point)?,
                         None,
                     )
                 }
@@ -302,15 +304,23 @@ where
             })?;
             tails.push(tail.to_vec());
             let session = match group.source {
-                RetainedOpeningSource::Commitment(source) => source.source.begin_eor(
-                    self,
-                    group.ring_dimension,
-                    weights,
-                    tail,
-                    eta,
-                    vec![E::zero(); extra],
-                    claim,
-                )?,
+                RetainedOpeningSource::Commitment(source) => source
+                    .source
+                    .legacy()
+                    .ok_or_else(|| {
+                        AkitaError::InvalidInput(
+                            "source was not admitted with legacy EOR capability".into(),
+                        )
+                    })?
+                    .begin_eor(
+                        self,
+                        group.ring_dimension,
+                        weights,
+                        tail,
+                        eta,
+                        vec![E::zero(); extra],
+                        claim,
+                    )?,
                 RetainedOpeningSource::Witness(witness) => {
                     let plan = ValidatedWitnessEorPlan::new(
                         weights,

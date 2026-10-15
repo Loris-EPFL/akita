@@ -82,6 +82,82 @@ where
     ) -> Result<Self::WitnessHandle, AkitaError>;
 }
 
+/// Exact coefficient-row witness construction using the native Z/E/T/F/H
+/// producers, without manufacturing a legacy ring-switch instance.
+pub trait OpaqueFullRingWitnessKernel<F, E>: OpaqueRecursiveWitnessBuildKernel<F, E>
+where
+    F: Field + CanonicalEncoding,
+    E: Field,
+{
+    fn finish_full_ring_recursive_witness(
+        &self,
+        build_handle: Self::WitnessBuildHandle,
+        fold_inputs: Vec<RecursiveWitnessFoldInput<Self::AcceptedFoldHandle>>,
+        commitment_ring_dimension: usize,
+    ) -> Result<Self::WitnessHandle, AkitaError>;
+
+    /// Visit the same retained canonical source in physical order, including
+    /// the authenticated zero suffix. No decoded/redecomposed replacement.
+    fn visit_full_ring_witness(
+        &self,
+        witness: &Self::WitnessHandle,
+        visitor: &mut dyn FnMut(usize, F) -> Result<(), AkitaError>,
+    ) -> Result<(), AkitaError>;
+
+    fn full_ring_witness_source<'a>(
+        &self,
+        witness: &'a Self::WitnessHandle,
+    ) -> Result<&'a dyn akita_types::full_ring::FullRingCoefficientSource<F>, AkitaError>;
+
+    /// Construct exact row weights only from the admitted native role matrices,
+    /// original fold inputs and complete retained witness layout.
+    fn with_full_ring_relation<T>(
+        &self,
+        witness: &Self::WitnessHandle,
+        use_relation: impl FnOnce(
+            &akita_types::full_ring::CoefficientRelationPlan<'_, F, E>,
+        ) -> Result<T, AkitaError>,
+    ) -> Result<T, AkitaError>;
+
+    /// Promote exactly the material coupled to a completed strong reduction.
+    /// The producing witness remains current until this consuming operation.
+    fn complete_full_ring_reduction(
+        &self,
+        witness: &mut Self::WitnessHandle,
+        material: &Self::CommitmentMaterialHandle,
+        binding: &super::NextWitnessBindingMessage<F>,
+        completion: super::FullRingCompletion,
+    ) -> Result<super::ProofContext, AkitaError>;
+
+    /// Complete a once-only selected normalization or terminal phase.
+    fn complete_full_ring_phase(
+        &self,
+        session: &Self::ProofSessionHandle,
+        completion: super::FullRingCompletion,
+    ) -> Result<(), AkitaError>;
+}
+
+/// Direct full-ring terminal over the already-created A-only source.
+pub trait OpaqueFullRingTerminalKernel<F, E>: OpaqueProverConsumer<F, E>
+where
+    F: Field + CanonicalEncoding,
+    E: Field,
+{
+    fn prepare_full_ring_terminal(
+        &self,
+        session: &Self::ProofSessionHandle,
+        context: &super::ProofContext,
+        witness: &Self::WitnessHandle,
+        point: akita_types::full_ring::FullRingRawPoint<E>,
+    ) -> Result<akita_types::full_ring::FullRingPartials<F>, AkitaError>;
+
+    fn encode_full_ring_terminal_response(
+        &self,
+        witness: &Self::WitnessHandle,
+        challenges: &akita_challenges::Challenges,
+    ) -> Result<Vec<u8>, AkitaError>;
+}
+
 /// Commitment transition that consumes and replaces a witness handle.
 pub trait OpaqueWitnessCommitKernel<F, E>: OpaqueProverConsumer<F, E>
 where

@@ -113,11 +113,12 @@ akita-params = { version = "0.1.0", path = "../akita-params", default-features =
 akita-verifier = { version = "0.1.0", path = "../akita-verifier", default-features = false }
 akita-prover = { version = "0.1.0", path = "../akita-prover", default-features = false }
 akita-setup = { version = "0.1.0", path = "../akita-setup", default-features = false }
+akita-sumcheck = { version = "0.1.0", path = "../akita-sumcheck", default-features = false }
+jolt-poly = { version = "=0.1.0", git = "https://github.com/a16z/jolt", rev = "1618f4b6dc97effcec3568ca7cf2b7420ac9e75f", default-features = false }
 tracing = "0.1"
 rayon = { version = "1.10", optional = true }
 
 [dev-dependencies]
-jolt-poly = { version = "=0.1.0", git = "https://github.com/a16z/jolt", rev = "1618f4b6dc97effcec3568ca7cf2b7420ac9e75f", default-features = false }
 # Test-only: pull in `akita-config`'s workspace artifact loader and ring-plan
 # seed. Schedule rows remain checked-in external artifacts loaded at runtime.
 akita-config = { version = "0.1.0", path = "../akita-config", default-features = false, features = [

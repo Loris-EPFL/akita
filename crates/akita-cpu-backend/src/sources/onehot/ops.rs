@@ -133,8 +133,7 @@ where
         .checked_mul(plan.num_digits_inner)
         .ok_or_else(|| AkitaError::InvalidSetup("active A width overflow".into()))?;
     let a_view = backend
-        .prepared_expanded_setup(prepared)
-        .shared_matrix
+        .prepared_matrix(prepared)?
         .ring_view::<D>(plan.n_a, active_a_cols)?;
     let rows = column_sweep_ajtai_onehot_multi::<F, D, I>(
         &a_view,
@@ -329,6 +328,7 @@ where
 {
     let point = weights.point();
     let plan = SubringCoefficientPackingPlan { point };
+    plan.validate_decoded()?;
     for poly in source.polys {
         plan.validate::<D>(RootPolyMeta::<F>::num_vars(*poly))?;
     }
@@ -478,6 +478,7 @@ where
         source: OneHotBatchView<'_, F, D, I>,
         plan: SubringCoefficientPackingPlan<'_, E>,
     ) -> Result<Vec<SubringCoefficientPackingPartials<F>>, AkitaError> {
+        plan.validate_decoded()?;
         onehot_coefficient_packing_batch(source, plan)
     }
 }
@@ -587,6 +588,7 @@ where
     E: ExtField<F> + akita_types::FpExtEncoding<F>,
     I: OneHotIndex,
 {
+    plan.validate_decoded()?;
     let fused_len =
         crate::arithmetic::coefficient_packing::FusedPackingWeights::<E>::required_len(plan.point)?;
     let should_prepare =

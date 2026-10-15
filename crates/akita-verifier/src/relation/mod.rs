@@ -295,6 +295,7 @@ where
                                 OpeningFamily::SubringCoefficientPacking(()) => {
                                     vec![E::zero(); group.num_positions]
                                 }
+                                OpeningFamily::FullRingScalarExtension(never) => match *never {},
                             };
                             Ok::<_, AkitaError>(QuotientRelationMultipliers {
                                 c_alphas,
@@ -327,6 +328,7 @@ where
                                 "reduced relation requires ring-multiplier openings".into(),
                             ));
                         }
+                        OpeningFamily::FullRingScalarExtension(never) => match never {},
                     };
                     Ok(RelationMatrixGroupEvaluator {
                         multipliers: ReducedRelationMultipliers {
@@ -342,6 +344,11 @@ where
                 })
                 .collect::<Result<Vec<_>, AkitaError>>()?;
             PreparedRelationGroups::ReducedEvaluation(groups)
+        }
+        RingRelationMode::ExactCoefficientRows => {
+            return Err(AkitaError::InvalidSetup(
+                "full-ring openings require the exact coefficient relation".into(),
+            ));
         }
     };
 

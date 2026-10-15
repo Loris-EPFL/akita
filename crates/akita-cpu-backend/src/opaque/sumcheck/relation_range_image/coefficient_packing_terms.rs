@@ -79,7 +79,7 @@ impl<E: Field> CpuCoefficientPackingTerms<E> {
         let group_claim_coefficients = semantics.group_claim_coefficients();
         let basis = semantics.basis();
         let opening_gadget = semantics.opening_gadget();
-        let witness_gadget = semantics.witness_gadget();
+        let source_opening_weights = semantics.source_opening_weights();
         let fold_gadget = semantics.fold_gadget();
         let d_d = semantics.d_d();
         let d_a = geometry.a_ring_dimension();
@@ -127,7 +127,7 @@ impl<E: Field> CpuCoefficientPackingTerms<E> {
             .ok_or_else(|| {
                 AkitaError::InvalidSetup("direct-opening segment count overflow".into())
             })?;
-        let terms_per_z_position = checked::product([witness_gadget.len(), fold_gadget.len()])
+        let terms_per_z_position = checked::product([source_opening_weights.len(), fold_gadget.len()])
             .ok_or_else(|| {
                 AkitaError::InvalidSetup("coefficient-packing packing-Z term count overflow".into())
             })?;
@@ -286,7 +286,7 @@ impl<E: Field> CpuCoefficientPackingTerms<E> {
                 Self::reserve(&mut task_terms, task_len, "packing-Z task term")?;
                 for position in positions {
                     let position_weight = position_weights[position];
-                    for (witness_digit, &witness_weight) in witness_gadget.iter().enumerate() {
+                    for (witness_digit, &source_opening_weight) in source_opening_weights.iter().enumerate() {
                         for (fold_digit, &fold_weight) in fold_gadget.iter().enumerate() {
                             let physical_start = unit.z_coefficient_index(
                                 d_a,
@@ -326,7 +326,7 @@ impl<E: Field> CpuCoefficientPackingTerms<E> {
                                 source: CpuCoefficientPackingSource::PackingZ,
                                 factor: -(semantics.consistency_weight()
                                     * position_weight
-                                    * witness_weight
+                                    * source_opening_weight
                                     * fold_weight),
                                 segments: segment..term_end,
                             });

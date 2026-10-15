@@ -2,12 +2,12 @@ use akita_error::AkitaError;
 use akita_params::ScheduleLookupKey;
 use akita_params::{
     try_extension_opening_reduction_level_bytes, CommitmentRingDims, CommittedGroupParams,
-    OpeningClaimsLayout, PolynomialGroupLayout, TerminalFoldParams,
+    OpeningClaimsLayout, TerminalFoldParams,
 };
 
 use crate::{
     planner::{
-        precommitted_group_equivalence_classes, root_level_candidates_for_prepared_producers,
+        precommitted_classes_for_key, root_level_candidates_for_prepared_producers,
         PreparedRootProducers,
     },
     PlannerPolicy,
@@ -111,7 +111,7 @@ pub(crate) const MAX_PRECOMMIT_OPENING_PRODUCTS: usize = 256;
 /// Enumerate the root precommit openings for one shared opening dimension.
 ///
 /// Each returned assignment holds one opening per interchangeable precommitted
-/// class, in [`precommitted_group_equivalence_classes`] order; every group of a
+/// class, in [`precommitted_classes_for_key`] order; every group of a
 /// class opens with its class's opening. The domain is the Cartesian product of
 /// the per-class coefficient-packing domains, so its size depends on the
 /// number of distinct classes and not on how many groups each class holds.
@@ -129,22 +129,21 @@ pub(crate) fn packing_precommit_opening_products(
     ) {
         return Ok(Vec::new());
     }
-    let class_domains =
-        precommitted_group_equivalence_classes(&key.precommitteds, precommitted_source_contracts)?
-            .into_iter()
-            .map(|indices| {
-                let profile = &key.precommitteds[indices[0]];
-                crate::schedule_params::PlannerOpeningCandidate::coefficient_packing_domain(
-                    0,
-                    policy.claim_ext_degree,
-                    CommitmentRingDims {
-                        inner: profile.inner.matrix.ring_dimension(),
-                        outer: profile.outer.matrix.ring_dimension(),
-                        opening: dimensions.d_d(),
-                    },
-                )
-            })
-            .collect::<Result<Vec<_>, _>>()?;
+    let class_domains = precommitted_classes_for_key(key, precommitted_source_contracts)?
+        .into_iter()
+        .map(|indices| {
+            let profile = &key.precommitteds[indices[0]];
+            crate::schedule_params::PlannerOpeningCandidate::coefficient_packing_domain(
+                0,
+                policy.claim_ext_degree,
+                CommitmentRingDims {
+                    inner: profile.inner.matrix.ring_dimension(),
+                    outer: profile.outer.matrix.ring_dimension(),
+                    opening: dimensions.d_d(),
+                },
+            )
+        })
+        .collect::<Result<Vec<_>, _>>()?;
     let Some(product_count) = class_domains.iter().try_fold(1usize, |count, domain| {
         count
             .checked_mul(domain.len())
@@ -174,6 +173,8 @@ pub(crate) fn packing_precommit_opening_products(
 ///
 /// EvaluationTrace work remains before coefficient-packing work to preserve
 /// deterministic tie behavior from the original search order.
+/// The borrowed opening layout enters decoded EOR sizing only for a genuine
+/// extension reduction; same-field and packing-only roots retain raw views.
 fn opening_work_domain(
     ctx: &SuffixCtx<'_>,
     state: SuffixState,
@@ -181,9 +182,129 @@ fn opening_work_domain(
     root_main_constraint: Option<&CommittedGroupParams>,
     guide_fold: Option<&CommittedGroupParams>,
     guide_terminal: Option<&TerminalFoldParams>,
-    opening_shape: PolynomialGroupLayout,
+    opening_layout: &OpeningClaimsLayout,
 ) -> Result<Vec<OpeningWork>, AkitaError> {
     let policy = ctx.policy;
+    if let Some((key, profile)) = root_level_key
+        .zip(ctx.root_final_profile)
+        .filter(|_| state.level == 0)
+    {
+        let classes = precommitted_classes_for_key(key, ctx.precommitted_source_contracts)?;
+        let mut work = Vec::new();
+        let final_carrier = crate::planner::frozen_root_carrier(
+            profile,
+            ctx.root_source_contract.ok_or_else(|| {
+                AkitaError::InvalidSetup("frozen final producer contract is missing".into())
+            })?,
+        )?;
+        for dimensions in dimension_candidates(policy, state.level, state.dimension_ceiling)? {
+            if dimensions.d_a() != profile.inner.matrix.ring_dimension()
+                || dimensions.d_b() != profile.outer.matrix.ring_dimension()
+                || !crate::schedule_params::precommitted_groups_support_opening_dimension(
+                    key.precommitteds.iter(),
+                    dimensions.d_d(),
+                )
+            {
+                continue;
+            }
+            let Some(opening) =
+                crate::schedule_params::PlannerOpeningCandidate::coefficient_packing(
+                    0,
+                    1,
+                    dimensions,
+                    final_carrier,
+                )?
+            else {
+                continue;
+            };
+            // One registered producer capability per class; multiplicity never
+            // merges originals or enlarges their source matrices.
+            let mut class_openings = Vec::with_capacity(classes.len());
+            for indices in &classes {
+                let source = &key.precommitteds[indices[0]];
+                let Some(source_opening) =
+                    crate::schedule_params::PlannerOpeningCandidate::coefficient_packing(
+                        0,
+                        1,
+                        CommitmentRingDims {
+                            inner: source.inner.matrix.ring_dimension(),
+                            outer: source.outer.matrix.ring_dimension(),
+                            opening: dimensions.d_d(),
+                        },
+                        crate::planner::frozen_root_carrier(
+                            source,
+                            ctx.precommitted_source_contracts[indices[0]],
+                        )?,
+                    )?
+                else {
+                    break;
+                };
+                class_openings.push(source_opening);
+            }
+            if class_openings.len() == classes.len() {
+                work.push(OpeningWork {
+                    dimensions,
+                    opening,
+                    precommitted_class_openings: class_openings,
+                    opening_reduction_bytes: 0,
+                    purpose: OpeningPurpose::FoldOnly,
+                });
+            }
+        }
+        return Ok(work);
+    }
+    if policy.opening_family == akita_schedules::PlannerOpeningFamily::FullRingE2OuterDirect {
+        if state.topology.incoming_setup_prefix().is_some() {
+            return Err(AkitaError::InvalidSetup(
+                "full-ring direct family cannot consume setup".into(),
+            ));
+        }
+        // This outer family closes after its complete grouped root. Inner
+        // accumulation/shrink folds have their own explicitly supplied schedule.
+        let dimensions = CommitmentRingDims::uniform(128);
+        let opening = crate::schedule_params::PlannerOpeningCandidate::full_ring_scalar_extension(
+            policy.claim_ext_degree,
+            dimensions,
+        )?;
+        if let Some(constraint) = root_main_constraint.or(guide_fold) {
+            if constraint.opening_method() != opening.method()
+                || constraint.role_dims() != dimensions
+            {
+                return Err(AkitaError::InvalidSetup(
+                    "full-ring guide has incompatible producer geometry".into(),
+                ));
+            }
+        }
+        let precommitted_class_openings = if let Some(key) = root_level_key {
+            precommitted_classes_for_key(key, ctx.precommitted_source_contracts)?
+                .into_iter()
+                .map(|indices| {
+                    let profile = &key.precommitteds[indices[0]];
+                    crate::schedule_params::PlannerOpeningCandidate::full_ring_scalar_extension(
+                        policy.claim_ext_degree,
+                        CommitmentRingDims {
+                            inner: profile.inner.matrix.ring_dimension(),
+                            outer: profile.outer.matrix.ring_dimension(),
+                            opening: 128,
+                        },
+                    )
+                })
+                .collect::<Result<Vec<_>, _>>()?
+        } else {
+            Vec::new()
+        };
+        return Ok(vec![OpeningWork {
+            dimensions,
+            opening,
+            precommitted_class_openings,
+            opening_reduction_bytes: 0,
+            purpose: if root_level_key.is_some() {
+                OpeningPurpose::FoldOnly
+            } else {
+                OpeningPurpose::TerminalOnly
+            },
+        }]);
+    }
     let early_packing_level = state.level <= 1;
     let terminal_seed_is_relevant = state_allows_terminal_seed(
         root_level_key.is_some(),
@@ -236,7 +357,7 @@ fn opening_work_domain(
         };
         let root_precommit_products = if early_packing_level && !packing_domain.is_empty() {
             root_level_key
-                .map(|root_key| {
+                .map(|root_key| -> Result<_, AkitaError> {
                     let products = packing_precommit_opening_products(
                         policy,
                         dimensions,
@@ -258,24 +379,29 @@ fn opening_work_domain(
                 .map(crate::schedule_params::PlannerOpeningCandidate::evaluation_trace),
         };
         if let Some(trace_opening) = trace_opening {
-            if let Some(opening_reduction_bytes) = try_extension_opening_reduction_level_bytes(
-                policy.challenge_field_bits()?,
-                policy.claim_ext_degree,
-                opening_shape,
-            )? {
+            let opening_reduction_bytes = if trace_opening
+                .method()
+                .requires_extension_opening_reduction(policy.claim_ext_degree)
+            {
+                try_extension_opening_reduction_level_bytes(
+                    policy.challenge_field_bits()?,
+                    policy.claim_ext_degree,
+                    opening_layout.aggregate_polynomial_group_layout()?,
+                )?
+            } else {
+                Some(0)
+            };
+            if let Some(opening_reduction_bytes) = opening_reduction_bytes {
                 let precommitted_class_openings = if let Some(root_key) = root_level_key {
-                    precommitted_group_equivalence_classes(
-                        &root_key.precommitteds,
-                        ctx.precommitted_source_contracts,
-                    )?
-                    .iter()
-                    .map(|indices| {
-                        let profile = &root_key.precommitteds[indices[0]];
-                        (ctx.ring_challenge_config)(profile.inner.matrix.ring_dimension())
+                    precommitted_classes_for_key(root_key, ctx.precommitted_source_contracts)?
+                        .iter()
+                        .map(|indices| {
+                            let profile = &root_key.precommitteds[indices[0]];
+                            (ctx.ring_challenge_config)(profile.inner.matrix.ring_dimension())
                             .ok()
                             .map(crate::schedule_params::PlannerOpeningCandidate::evaluation_trace)
-                    })
-                    .collect::<Option<Vec<_>>>()
+                        })
+                        .collect::<Option<Vec<_>>>()
                 } else {
                     Some(Vec::new())
                 };
@@ -328,6 +454,12 @@ fn guided_opening(
     constraint: &CommittedGroupParams,
 ) -> Result<crate::schedule_params::PlannerOpeningCandidate, AkitaError> {
     let opening = match constraint.opening_method() {
+        akita_params::OpeningMethod::FullRingScalarExtension { .. } => {
+            crate::schedule_params::PlannerOpeningCandidate::full_ring_scalar_extension(
+                policy.claim_ext_degree,
+                constraint.role_dims(),
+            )?
+        }
         akita_params::OpeningMethod::EvaluationTrace => {
             crate::schedule_params::PlannerOpeningCandidate::evaluation_trace(
                 constraint.fold_challenge_config(),
@@ -508,7 +640,6 @@ impl<'a> CandidateDomain<'a> {
         } else {
             suffix_opening_layout(state.current_witness_len, incoming_setup_prefix)?
         };
-        let opening_shape = opening_layout.aggregate_polynomial_group_layout()?;
         let inner_source = if ctx.level_zero_is_root && state.level == 0 {
             crate::schedule_params::root_inner_basis_source(ctx.root_source_contract.ok_or_else(
                 || AkitaError::InvalidSetup("root batch is missing its source contract".into()),
@@ -518,8 +649,14 @@ impl<'a> CandidateDomain<'a> {
                 log_basis: state.current_lb,
             }
         };
-        let (allowed_min_inner_basis, allowed_max_inner_basis) =
-            inner_source.search_range(policy)?;
+        let frozen_root = ctx.root_final_profile.filter(|_| root_level_key.is_some());
+        let (allowed_min_inner_basis, allowed_max_inner_basis) = if let Some(profile) = frozen_root
+        {
+            let basis = profile.inner.digits.log_basis;
+            (basis, basis)
+        } else {
+            inner_source.search_range(policy)?
+        };
         let (allowed_min_open_basis, allowed_max_open_basis) =
             crate::policy::log_basis_search_range_at_level(policy, state.level);
         let guided_bases = root_main_constraint
@@ -560,7 +697,7 @@ impl<'a> CandidateDomain<'a> {
             root_main_constraint,
             guide_fold,
             guide_terminal,
-            opening_shape,
+            &opening_layout,
         )?;
         let retain_split_frontier = state.topology.incoming_setup_prefix().is_some()
             || policy.selection_policy == crate::SelectionPolicyId::MinEstimatedExactProofAndWorkV5
@@ -576,8 +713,9 @@ impl<'a> CandidateDomain<'a> {
         } else {
             FoldCandidatePolicy::Best
         };
-        let require_child_fold =
-            root_level_key.is_some_and(|root_key| !root_key.precommitteds.is_empty());
+        let require_child_fold = policy.opening_family
+            != akita_schedules::PlannerOpeningFamily::FullRingE2OuterDirect
+            && root_level_key.is_some_and(|root_key| !root_key.precommitteds.is_empty());
 
         Ok(Self {
             root_level_key,
@@ -754,7 +892,12 @@ impl<'a> CandidateDomain<'a> {
             AkitaError::InvalidSetup("root batch is missing its source contract".into())
         })?;
         for work in &self.opening_work {
-            let Some(preparation) = PreparedRootProducers::prepare(
+            let prepare = if ctx.root_final_profile.is_some() {
+                PreparedRootProducers::prepare_frozen
+            } else {
+                PreparedRootProducers::prepare
+            };
+            let Some(preparation) = prepare(
                 root_key,
                 ctx.precommitted_source_contracts,
                 ctx.policy,
@@ -772,17 +915,32 @@ impl<'a> CandidateDomain<'a> {
                 .filtered(ctx.relation_mode_filter)?
                 .only_transition()?;
             for inner_lb in self.inner_basis_range.clone() {
-                let mut dimension_candidates = root_level_candidates_for_prepared_producers(
-                    root_key,
-                    final_source_contract,
-                    ctx.policy,
-                    work.dimensions,
-                    work.opening,
-                    &preparation,
-                    inner_lb,
-                    open_lb,
-                    self.root_main_constraint.map(candidate_layout_guide),
-                )?;
+                let mut dimension_candidates = if let Some(profile) = ctx.root_final_profile {
+                    crate::planner::root_candidate_for_frozen_profile(
+                        profile,
+                        final_source_contract,
+                        ctx.policy,
+                        work.dimensions,
+                        work.opening,
+                        &preparation,
+                        open_lb,
+                        &self.opening_layout,
+                    )?
+                    .into_iter()
+                    .collect()
+                } else {
+                    root_level_candidates_for_prepared_producers(
+                        root_key,
+                        final_source_contract,
+                        ctx.policy,
+                        work.dimensions,
+                        work.opening,
+                        &preparation,
+                        inner_lb,
+                        open_lb,
+                        self.root_main_constraint.map(candidate_layout_guide),
+                    )?
+                };
                 if let Some(constraint) = self.root_main_constraint {
                     dimension_candidates.retain(|(params, _)| {
                         root_candidate_matches_constraint(params, constraint)

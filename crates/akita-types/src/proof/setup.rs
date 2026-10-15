@@ -1,4 +1,8 @@
-//! Shared setup data shapes for Akita prover and verifier APIs.
+//! Legacy seed-derived shared-prefix setup data for Akita.
+//!
+//! Literal selected full-ring installations use [`super::setup_roles`], not
+//! renamed prefixes or freshly derived role seeds. The families have distinct
+//! [`super::setup_roles::AkitaSetupIdentity`] variants.
 
 use super::setup_prefix::SetupPrefixVerifierRegistry;
 use akita_error::AkitaError;

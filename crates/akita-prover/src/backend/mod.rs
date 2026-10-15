@@ -1,6 +1,7 @@
 //! Representation-free contract between protocol orchestration and prover backends.
 
 mod admission;
+mod completion;
 mod context;
 mod handles;
 mod identity;
@@ -12,7 +13,8 @@ mod scope;
 mod stage3;
 mod traits;
 
-pub use admission::ProofAdmission;
+pub use admission::{FullRingProofAdmission, ProofAdmission};
+pub use completion::{FullRingCompletion, FullRingCompletionKind};
 pub use context::OperationCtx;
 pub use handles::{
     AcceptedFoldHandle, CommitmentHandleMetadata, OpeningSource, RecursiveWitnessHandle,
@@ -31,7 +33,8 @@ pub use metadata::{
     TerminalCommitmentMaterialKernel,
 };
 pub use opening::{
-    EorGroupRequest, GroupOpeningRequest, OpaqueEorKernel, OpaqueOpeningKernel, PreparedEor,
+    EorGroupRequest, GroupOpeningRequest, OpaqueEorKernel, OpaqueFullRingOpeningKernel,
+    OpaqueOpeningKernel, PreparedEor,
 };
 pub use plans::{
     EvaluationTraceDescription, FoldProbeGeometry, PhysicalL2WeightRequest, RelationWeightRequest,
@@ -44,12 +47,13 @@ pub use plans::{
 pub use scope::{ProofScope, ProofScopeConsumer, ProofScopeId};
 pub use stage3::{OpaqueStage3Kernel, Stage3Request};
 pub use traits::{
-    OpaqueProverConsumer, OpaqueRecursiveWitnessBuildKernel, OpaqueRelationWitnessKernel,
-    OpaqueResourceReleaseKernel, OpaqueStage1Kernel, OpaqueStage2Kernel, OpaqueTerminalFoldKernel,
-    OpaqueWitnessCommitKernel, OpaqueWitnessOpeningKernel, ProverHandleFamily,
+    OpaqueFullRingTerminalKernel, OpaqueFullRingWitnessKernel, OpaqueProverConsumer,
+    OpaqueRecursiveWitnessBuildKernel, OpaqueRelationWitnessKernel, OpaqueResourceReleaseKernel,
+    OpaqueStage1Kernel, OpaqueStage2Kernel, OpaqueTerminalFoldKernel, OpaqueWitnessCommitKernel,
+    OpaqueWitnessOpeningKernel, ProverHandleFamily,
 };
 
-/// Complete protocol capability implemented by a concrete prover backend.
+/// Legacy trace/subfield protocol capability, including its real EOR and setup stages.
 pub trait ProverBackend<F: jolt_field::Field + jolt_field::CanonicalEncoding, E: jolt_field::Field>:
     ProofAdmission<F, E>
     + OpaqueOpeningKernel<F, E>
@@ -82,6 +86,36 @@ where
         + OpaqueStage3Kernel<F, E>
         + OpaqueTerminalFoldKernel<F, E>
         + OpaqueWitnessOpeningKernel<F, E>
+        + OpaqueResourceReleaseKernel<F, E>
+        + TerminalCommitmentMaterialKernel<F, B::CommitmentMaterialHandle>,
+{
+}
+
+/// Selected full-ring capability. It shares source admission, complete witness
+/// construction and commitment ownership, but makes no EOR/subfield promise.
+pub trait FullRingProverBackend<
+    F: jolt_field::Field + jolt_field::CanonicalEncoding,
+    E: jolt_field::Field,
+>:
+    FullRingProofAdmission<F, E>
+    + OpaqueFullRingOpeningKernel<F, E>
+    + OpaqueFullRingWitnessKernel<F, E>
+    + OpaqueFullRingTerminalKernel<F, E>
+    + OpaqueWitnessCommitKernel<F, E>
+    + OpaqueResourceReleaseKernel<F, E>
+    + TerminalCommitmentMaterialKernel<F, Self::CommitmentMaterialHandle>
+{
+}
+
+impl<F, E, B> FullRingProverBackend<F, E> for B
+where
+    F: jolt_field::Field + jolt_field::CanonicalEncoding,
+    E: jolt_field::Field,
+    B: FullRingProofAdmission<F, E>
+        + OpaqueFullRingOpeningKernel<F, E>
+        + OpaqueFullRingWitnessKernel<F, E>
+        + OpaqueFullRingTerminalKernel<F, E>
+        + OpaqueWitnessCommitKernel<F, E>
         + OpaqueResourceReleaseKernel<F, E>
         + TerminalCommitmentMaterialKernel<F, B::CommitmentMaterialHandle>,
 {

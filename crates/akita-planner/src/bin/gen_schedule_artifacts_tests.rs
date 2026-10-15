@@ -113,12 +113,18 @@ fn strict_catalog_baseline_requires_a_baseline_path() {
 }
 
 #[test]
-fn every_grouped_artifact_precommit_has_a_shipped_scalar_producer() {
+fn every_legacy_grouped_artifact_precommit_has_a_shipped_scalar_producer() {
     let artifact_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../..")
         .join("artifacts/schedules");
     let catalogs = ALL_GENERATED_FAMILIES
         .iter()
+        // Full-ring accumulation admits its original endpoint descriptors
+        // directly; it does not promise standalone PCS producer catalogs.
+        .filter(|family| {
+            (family.policy)().opening_family
+                != akita_config::PlannerOpeningFamily::FullRingE2InnerRecursive
+        })
         .map(|family| {
             let path = artifact_dir.join(format!("{}.aks", family.family_name()));
             let bytes = std::fs::read(&path)
@@ -183,4 +189,112 @@ fn every_grouped_artifact_precommit_has_a_shipped_scalar_producer() {
             }
         }
     }
+}
+
+#[test]
+fn compact_inner_generation_publishes_a_trusted_complete_root() {
+    use akita_config::{full_ring::CompactInner, CommitmentConfig, TrustedScheduleCatalog};
+    use akita_params::sis::CommittedSourceClass;
+
+    let family = family_by_name(CompactInner::schedule_family_name()).expect("compact family");
+    let output_dir = std::env::temp_dir().join(format!(
+        "akita-compact-catalog-roundtrip-{}",
+        std::process::id()
+    ));
+    let spec = emit_spec_for_family(family, &GenerationPreplans::default(), output_dir.clone())
+        .expect("complete compact generation request");
+    let (key, contracts) = CompactInner::root_inputs().expect("original endpoint contracts");
+    assert!(spec.keys.is_empty());
+    assert!(spec.preplanned_scalar.is_empty());
+    assert_eq!(spec.grouped_requests.len(), 1);
+    assert_eq!(spec.grouped_requests[0].key(), key);
+    assert_eq!(spec.grouped_requests[0].source_contracts(), contracts);
+    for contract in &contracts[1..] {
+        assert_eq!(
+            contract.class(),
+            CommittedSourceClass::OriginalBalancedDigitPlanes
+        );
+        assert_eq!(contract.decomposition().log_commit_bound, 128);
+    }
+
+    let outputs = render_schedule_artifact_outputs_with_validation(
+        &[spec],
+        MaterializationDiagnostics::default(),
+        |_, entries| {
+            assert_eq!(entries.len(), 1);
+            assert_eq!(entries[0].key(), key);
+            assert_eq!(
+                entries[0]
+                    .precommitted_producers()
+                    .iter()
+                    .map(|producer| producer.source_contract())
+                    .collect::<Vec<_>>(),
+                contracts,
+            );
+            Ok(())
+        },
+    )
+    .expect("materialize and validate compact artifact");
+    std::fs::create_dir(&output_dir).expect("isolated publication directory");
+    let destinations = publish_artifact_outputs(outputs).expect("publish compact artifact");
+    assert_eq!(destinations.len(), 1);
+    let bytes = std::fs::read(&destinations[0]).expect("published compact artifact");
+    std::fs::remove_dir_all(&output_dir).expect("remove roundtrip artifact");
+    let catalog = TrustedScheduleCatalog::<CompactInner>::from_artifact_bytes(&bytes)
+        .expect("decode and bind actual compact family");
+    assert_eq!(catalog.rows().count(), 1);
+    let row = catalog.resolve_key(&key).expect("exact original root key");
+    let schedule = row.schedule();
+    assert_eq!(
+        schedule
+            .recursive_folds
+            .iter()
+            .map(|step| (step.input_witness_len, step.output_witness_len))
+            .collect::<Vec<_>>(),
+        vec![(1 << 22, 1 << 21), (1 << 21, 1 << 20), (1 << 20, 1 << 19)],
+    );
+    assert_eq!(
+        schedule.terminal.blocks,
+        akita_params::BlockGeometry::new(4096, 512, 8)
+    );
+    assert_eq!(
+        schedule.terminal.opening_method,
+        akita_params::OpeningMethod::FULL_RING_E2
+    );
+    assert!(catalog
+        .resolve_key(&ScheduleLookupKey::single(key.final_group))
+        .is_err());
+}
+
+#[test]
+fn compact_inner_explicit_scalar_and_producer_requests_reject() {
+    let family = family_by_name("akita-full-ring-e2-compact-inner-v1").expect("compact family");
+    let preplans = GenerationPreplans::default();
+    let explicit_rows = ExplicitRows {
+        final_group: Some(
+            parse_explicit_group("akita-full-ring-e2-compact-inner-v1:16:56")
+                .expect("known family and scalar layout"),
+        ),
+        precommitted_groups: Vec::new(),
+    };
+    let spec = emit_spec_with_overrides(
+        family,
+        &preplans,
+        PathBuf::from("generated"),
+        &explicit_rows,
+    )
+    .expect("explicit scalar request");
+    let error = render_schedule_artifact_outputs_with_validation(
+        &[spec],
+        MaterializationDiagnostics::default(),
+        |_, _| Ok(()),
+    )
+    .expect_err("scalar requests must fail, not publish an empty catalog");
+    assert!(error.contains("not scalar requests"));
+    let error =
+        (family.explicit_precommitted_group)(&preplans, PolynomialGroupLayout::singleton(16))
+            .expect_err("no standalone compact producer");
+    assert!(error
+        .to_string()
+        .contains("no standalone precommitted producer"));
 }

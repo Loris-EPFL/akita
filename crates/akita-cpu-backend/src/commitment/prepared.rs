@@ -14,7 +14,7 @@ where
     F: Field + CanonicalEncoding,
 {
     pub(super) operation: Arc<O>,
-    setup: akita_types::AkitaSetupDescriptor,
+    setup: akita_types::AkitaSetupIdentity,
     pub(super) operation_id: CommitmentOperationId,
     pub(super) backend_instance: BackendInstanceId,
     pub(super) name: &'static str,
@@ -38,7 +38,7 @@ where
 
     pub(super) fn validate_setup(
         &self,
-        setup: &akita_types::AkitaSetupDescriptor,
+        setup: &akita_types::AkitaSetupIdentity,
     ) -> Result<(), AkitaError> {
         if self.setup != *setup {
             return Err(AkitaError::InvalidSetup(

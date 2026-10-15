@@ -19,6 +19,7 @@ pub mod ring_relation;
 pub mod scheme;
 pub mod setup;
 pub mod setup_prefix;
+pub mod setup_roles;
 pub mod stage1;
 
 mod containers;
@@ -40,7 +41,7 @@ mod witness_emission;
 pub const MAX_UNTRUSTED_COMMITMENT_COEFFICIENTS: usize = 1 << 26;
 
 pub use crate::opening_claims::{
-    row_coefficients, GroupBatchStatement, OpeningClaims, PolynomialGroupClaims,
+    encode_opening_endpoint_binding, row_coefficients, GroupBatchStatement, OpeningClaims, PolynomialGroupClaims,
 };
 pub use batch::{
     prepare_opening_point, ring_subfield_packed_extension_opening_point, PreparedOpeningPoint,
@@ -63,7 +64,7 @@ pub use compression_relation_weights::{
     CompressionRelationWeights, NegativeBinarySupport, ReducedCompressionRelationWeights,
 };
 pub use containers::{DigitBlockIter, DigitBlocks, RingVec, RingView};
-pub use fold_challenges::{draw_group_fold_challenges, GroupFoldChallenges, OpeningFamily};
+pub use fold_challenges::{group_fold_challenges_from_group, group_fold_challenges_from_level, plan_group_fold_challenges, GroupFoldChallengePlan, GroupFoldChallenges, OpeningFamily};
 
 #[cfg(test)]
 pub(crate) use levels::{
@@ -95,6 +96,11 @@ pub use setup::{
 pub use setup_prefix::{
     setup_prefix_coverage_eval_len, SetupPrefixPublicCommitment, SetupPrefixVerifierRegistry,
     SetupPrefixVerifierSlot,
+};
+pub use setup_roles::{
+    AkitaSetupIdentity, FullRingCommitmentRoles, FullRingLevelRoles, FullRingMatrixDescriptor,
+    FullRingMatrixRole, FullRingSetupDescriptor, FullRingSetupFamily, FullRingSetupSource,
+    FullRingSourceId, FullRingSuccessor, InstalledFullRingSetup,
 };
 pub use shapes::{canonical_extension_opening_reduction_shape, ExtensionOpeningReductionShape};
 pub use stage1::DigitRangeEqualityPoint;

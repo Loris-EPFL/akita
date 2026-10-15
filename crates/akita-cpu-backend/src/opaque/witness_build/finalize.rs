@@ -64,6 +64,21 @@ impl<F: Field + CanonicalEncoding> RingRelationGroupWitness<F> {
         }
     }
 
+    pub(crate) fn from_full_ring_parts(
+        fold: crate::opaque::CpuAcceptedFold<F>,
+        e_hat: DigitBlocks,
+        inner_relation: crate::opaque::OpaqueInnerRelationState<F>,
+        role_dims: CommitmentRingDims,
+    ) -> Self {
+        Self {
+            fold,
+            e_hat,
+            folded_opening: akita_types::OpeningFamily::FullRingScalarExtension(()),
+            inner_relation,
+            role_dims,
+        }
+    }
+
     fn role_dims(&self) -> CommitmentRingDims {
         self.role_dims
     }
@@ -103,6 +118,7 @@ impl<F: Field + CanonicalEncoding> RingRelationGroupWitness<F> {
 pub(crate) enum RelationDQuotientWitness<F: Field> {
     QuotientLift(RingVec<F>),
     ReducedEvaluation,
+    ExactCoefficientRows,
 }
 
 /// Opaque consumer handle for all private ring-relation construction state.
@@ -472,7 +488,41 @@ where
         + crate::opaque::FoldHandleBackend<F, AcceptedFold = crate::opaque::CpuAcceptedFold<F>>,
     B: RuntimeRingSwitchProveBackend<F>,
 {
-    let opening_batch = instance.opening_batch();
+    let layout = instance.segment_layout(lp, None)?;
+    cpu_witness_build_with_layout(
+        Some(instance),
+        instance.opening_batch(),
+        &layout,
+        witness,
+        opening_ctx,
+        ring_switch_ctx,
+        lp,
+        commitment_ring_dimension,
+        binding,
+    )
+}
+
+/// Shared Z/E/T/F/H producer. Exact coefficient rows provide their admitted
+/// layout directly; legacy quotient production retains its actual instance.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn cpu_witness_build_with_layout<F, O, B>(
+    instance: Option<&RingRelationInstance<F>>,
+    opening_batch: &akita_params::OpeningClaimsLayout,
+    witness_layout: &WitnessLayout,
+    witness: RingRelationWitness<F>,
+    opening_ctx: &OperationCtx<'_, F, O>,
+    ring_switch_ctx: &OperationCtx<'_, F, B>,
+    lp: &CommittedGroupParams,
+    commitment_ring_dimension: usize,
+    binding: crate::opaque::OperationBinding,
+) -> Result<crate::opaque::OpaqueRecursiveWitness, AkitaError>
+where
+    F: Field + CanonicalEncoding + Ring + AkitaSerialize,
+    O: RuntimeRingSwitchProveBackend<F>
+        + crate::opaque::RuntimeFoldRelationBackend<F>
+        + crate::opaque::FoldHandleBackend<F, AcceptedFold = crate::opaque::CpuAcceptedFold<F>>,
+    B: RuntimeRingSwitchProveBackend<F>,
+{
     validate_i8_setup_log_basis(
         lp.open().digits.log_basis,
         "for i8 prover opening decomposition",
@@ -604,21 +654,24 @@ where
         });
     }
     validate_chunked_witness_cfg(lp)?;
-    for group_index in 0..opening_batch.num_groups() {
-        let group_dims = lp.group_role_dims(opening_batch, group_index)?;
-        let opening = instance.group_openings().get(group_index).ok_or_else(|| {
-            AkitaError::Internal("validated ring-switch instance opening group is missing".into())
-        })?;
-        if let Ok(ring_multiplier_point) = opening.evaluation_trace_multiplier_point() {
-            dispatch_for_field!(
-                ProtocolDispatchSlot::Role(RingRole::Inner),
-                F,
-                group_dims.d_a(),
-                |D_G| ring_multiplier_point.ensure_ring_dim::<D_G>()
-            )?;
+    if let Some(instance) = instance {
+        for group_index in 0..opening_batch.num_groups() {
+            let group_dims = lp.group_role_dims(opening_batch, group_index)?;
+            let opening = instance.group_openings().get(group_index).ok_or_else(|| {
+                AkitaError::Internal(
+                    "validated ring-switch instance opening group is missing".into(),
+                )
+            })?;
+            if let Ok(ring_multiplier_point) = opening.evaluation_trace_multiplier_point() {
+                dispatch_for_field!(
+                    ProtocolDispatchSlot::Role(RingRole::Inner),
+                    F,
+                    group_dims.d_a(),
+                    |D_G| ring_multiplier_point.ensure_ring_dim::<D_G>()
+                )?;
+            }
         }
     }
-    let witness_layout = instance.segment_layout(lp, None)?;
 
     // Relation quotient `r`: each group owns a native consistency/A/B
     // block, while the level owns the shared D tail. One trailing witness
@@ -627,21 +680,32 @@ where
         (
             akita_params::RingRelationMode::QuotientLift,
             RelationDQuotientWitness::QuotientLift(d_quotients),
-        ) => PreparedWitnessTail::QuotientLift(compute_multi_group_relation_quotient::<F, O, B>(
-            opening_ctx,
-            ring_switch_ctx,
-            lp,
-            opening_batch,
-            &owned,
-            instance.group_openings(),
-            instance.extension_degree(),
-            &d_quotients,
-            instance.rhs(),
-            compression.as_ref(),
-        )?),
+        ) => {
+            let instance = instance.ok_or_else(|| {
+                AkitaError::InvalidInput(
+                    "quotient witness production requires the legacy relation instance".into(),
+                )
+            })?;
+            PreparedWitnessTail::QuotientLift(compute_multi_group_relation_quotient::<F, O, B>(
+                opening_ctx,
+                ring_switch_ctx,
+                lp,
+                opening_batch,
+                &owned,
+                instance.group_openings(),
+                instance.extension_degree(),
+                &d_quotients,
+                instance.rhs(),
+                compression.as_ref(),
+            )?)
+        }
         (
             akita_params::RingRelationMode::ReducedEvaluation,
             RelationDQuotientWitness::ReducedEvaluation,
+        ) => PreparedWitnessTail::ReducedEvaluation,
+        (
+            akita_params::RingRelationMode::ExactCoefficientRows,
+            RelationDQuotientWitness::ExactCoefficientRows,
         ) => PreparedWitnessTail::ReducedEvaluation,
         _ => {
             return Err(AkitaError::Internal(
@@ -694,14 +758,14 @@ where
         match tail {
             PreparedWitnessTail::QuotientLift(r) => emit_witness_tail(
                 &mut out,
-                &witness_layout,
+                witness_layout,
                 &r,
                 r_decomp_levels::<F>(lp.open().digits.log_basis),
                 lp.open().digits.log_basis,
                 compression.as_ref(),
             )?,
             PreparedWitnessTail::ReducedEvaluation => {
-                emit_reduced_witness_tail(&mut out, &witness_layout, compression.as_ref())?
+                emit_reduced_witness_tail(&mut out, witness_layout, compression.as_ref())?
             }
         }
     }
@@ -714,9 +778,9 @@ where
     }
     let out = out.finish()?;
     #[cfg(feature = "response-model-diagnostics")]
-    trace_witness_source_moments(&out, &witness_layout, lp);
+    trace_witness_source_moments(&out, witness_layout, lp);
     crate::opaque::CpuWitnessHandle::from_cpu(
-        RecursiveWitnessFlat::from_witness_layout(out, &witness_layout, known_balanced_log_basis)?,
+        RecursiveWitnessFlat::from_witness_layout(out, witness_layout, known_balanced_log_basis)?,
         commitment_ring_dimension,
         binding,
     )

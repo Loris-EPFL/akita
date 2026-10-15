@@ -93,14 +93,22 @@ mod tests {
         let slot = b"canonical setup slot";
         let claim = E::from_u64(17);
         let prefix_eval = E::from_u64(29);
-        let state = new_prover_channel(b"native-stage3", b"fixture").unwrap();
+        let context = crate::indexed_test_support::context(b"native-stage3", vec![
+            akita_transcript::InstalledEvent::Message(akita_transcript::ProtocolContextRecord::new(
+                site(3, ROLE_SETUP_SLOT).to_bytes(), akita_transcript::ProtocolMessageKind::PublicValue as u32,
+                slot.len() as u64, slot.len() as u64, 0,
+            )),
+            crate::indexed_test_support::extension_message::<F, E>(site(3, ROLE_INPUT_CLAIM), akita_transcript::ProtocolMessageKind::ProofAtoms, 1),
+            crate::indexed_test_support::extension_message::<F, E>(site(3, ROLE_PREFIX_EVAL), akita_transcript::ProtocolMessageKind::ProofAtoms, 1),
+        ]);
+        let state = new_prover_channel(&context).unwrap();
         let mut prover = ProverGrinding::new(state, &plan);
         stage3_public_slot(&mut prover, 3, slot).unwrap();
         stage3_claim::<F, E, _>(&mut prover, 3, claim).unwrap();
         stage3_prefix_eval::<F, E, _>(&mut prover, 3, prefix_eval).unwrap();
         let proof = prover.finish().unwrap();
 
-        let state = new_verifier_channel(b"native-stage3", b"fixture", &proof).unwrap();
+        let state = new_verifier_channel(&context, &proof).unwrap();
         let mut verifier = VerifierGrinding::new(state, &plan);
         stage3_public_slot(&mut verifier, 3, slot).unwrap();
         assert_eq!(

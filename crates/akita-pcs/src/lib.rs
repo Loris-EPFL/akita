@@ -40,7 +40,9 @@
 #![warn(missing_docs)]
 #![warn(unreachable_pub)]
 
+mod native_context;
 mod scheme;
+pub mod accumulation;
 #[cfg(test)]
 #[path = "../tests/support/mod.rs"]
 mod test_support;
@@ -53,8 +55,8 @@ pub use akita_error::AkitaError;
 #[doc(hidden)]
 pub use akita_cpu_backend::custom_source;
 pub use akita_cpu_backend::{
-    AkitaProverSetup, CommitOutput, CommitmentHandle, CpuBackend, DensePoly, GroupContext,
-    OneHotPoly, SourceHandle,
+    compact_inner_setup_descriptor, install_compact_inner_setup, AkitaProverSetup, CommitOutput,
+    CommitmentHandle, CpuBackend, DensePoly, GroupContext, OneHotPoly, PackedRamSource, SourceHandle,
 };
 pub use akita_params::{BasisMode, OpeningClaimsLayout, PrecommittedGroupProfiles};
 pub use akita_prover::{
@@ -76,3 +78,6 @@ pub use jolt_field::{
     PRIME_OFFSET_MAX, PRIME_OFFSET_SPECS,
 };
 pub use scheme::AkitaCommitmentScheme;
+pub use native_context::{
+    prepare_native_proof_context, prepare_native_prover_context, NativeProofContext,
+};

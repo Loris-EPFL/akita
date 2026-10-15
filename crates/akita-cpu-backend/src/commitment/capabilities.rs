@@ -156,6 +156,7 @@ impl CompressionOperationCapabilities {
             relation_modes: vec![
                 RingRelationMode::QuotientLift,
                 RingRelationMode::ReducedEvaluation,
+                RingRelationMode::ExactCoefficientRows,
             ],
         }
     }

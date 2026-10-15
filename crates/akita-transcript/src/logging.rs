@@ -87,20 +87,32 @@ pub fn thread_proof_ranges() -> Vec<ProofMessageRange> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{new_prover_channel, new_verifier_channel, prover_context, verifier_context};
+    use crate::{new_prover_channel, new_verifier_channel, prover_context, verifier_context,
+        IndexedLimits, InstalledContext, InstalledEvent, InstalledRegistry};
 
     #[test]
     fn prover_and_verifier_record_identical_proof_stream_contexts() {
-        let record = ProtocolContextRecord::new([7; 32], 3, 2, 64, 32);
+        let record = ProtocolContextRecord::new([7; 32], 3, 1, 1, 0);
+        let limits = IndexedLimits {
+            max_context_bytes: 128, max_prefix_bytes: 1024, max_key_bytes: 1024,
+            max_descriptor_bytes: 128, max_answer_bytes: 2048, max_result_bytes: 128,
+            max_proof_bytes: 128,
+        };
+        let registry = InstalledRegistry::new(7, vec![InstalledEvent::Message(record)], limits).unwrap();
+        let context = InstalledContext::new(&registry, b"logging", b"instance").unwrap();
 
         clear_thread_events();
-        let mut prover = new_prover_channel(b"logging", b"instance").unwrap();
-        prover_context(&mut prover, record);
+        let mut prover = new_prover_channel(&context).unwrap();
+        prover_context(&mut prover, record).unwrap();
+        prover.prover_message(&[42u8]).unwrap();
+        let proof = prover.finish().unwrap();
         let prover_events = thread_events();
 
         clear_thread_events();
-        let mut verifier = new_verifier_channel(b"logging", b"instance", &[]).unwrap();
-        verifier_context(&mut verifier, record);
+        let mut verifier = new_verifier_channel(&context, &proof).unwrap();
+        verifier_context(&mut verifier, record).unwrap();
+        assert_eq!(verifier.prover_message::<[u8; 1]>().unwrap(), [42]);
+        verifier.check_eof().unwrap();
         assert_eq!(thread_events(), prover_events);
         assert_eq!(prover_events, vec![TranscriptEvent::Context(record)]);
     }

@@ -25,6 +25,9 @@ pub enum RingRelationMode {
     /// Check the relation after negacyclic reduction at the existing random
     /// evaluation point and omit polynomial-modulus quotient rows.
     ReducedEvaluation,
+    /// Batch every native negacyclic coefficient equation with row equality
+    /// weights. No off-ring alpha and no polynomial quotient witness exists.
+    ExactCoefficientRows,
 }
 
 impl RingRelationMode {
@@ -34,6 +37,7 @@ impl RingRelationMode {
         match self {
             Self::QuotientLift => "quotient_lift",
             Self::ReducedEvaluation => "reduced_evaluation",
+            Self::ExactCoefficientRows => "exact_coefficient_rows",
         }
     }
 
@@ -42,6 +46,7 @@ impl RingRelationMode {
         match self {
             Self::QuotientLift => 1,
             Self::ReducedEvaluation => 2,
+            Self::ExactCoefficientRows => 3,
         }
     }
 
@@ -49,6 +54,16 @@ impl RingRelationMode {
     #[must_use]
     pub const fn is_reduced_evaluation(self) -> bool {
         matches!(self, Self::ReducedEvaluation)
+    }
+
+    #[must_use]
+    pub const fn is_exact_coefficient_rows(self) -> bool {
+        matches!(self, Self::ExactCoefficientRows)
+    }
+
+    #[must_use]
+    pub const fn has_quotient_witness(self) -> bool {
+        matches!(self, Self::QuotientLift)
     }
 }
 
@@ -61,6 +76,8 @@ pub enum RingRelationPhase {
     QuotientPrefix,
     /// Every later committed fold uses reduced evaluation.
     ReducedEvaluationSuffix,
+    /// Full-ring native coefficient relations remain distinct from alpha evaluation.
+    ExactCoefficientRows,
 }
 
 /// Typed topology visible to the canonical relation transition authority.
@@ -74,6 +91,8 @@ pub enum RelationCandidateTopology {
     SetupPrefixedEvaluationTrace,
     /// Coefficient packing consuming a setup prefix.
     SetupPrefixedCoefficientPacking,
+    DirectFullRingScalarExtension,
+    SetupPrefixedFullRingScalarExtension,
 }
 
 impl RelationCandidateTopology {
@@ -88,6 +107,12 @@ impl RelationCandidateTopology {
             (true, crate::OpeningMethod::SubringCoefficientPacking { .. }) => {
                 Self::SetupPrefixedCoefficientPacking
             }
+            (false, crate::OpeningMethod::FullRingScalarExtension { .. }) => {
+                Self::DirectFullRingScalarExtension
+            }
+            (true, crate::OpeningMethod::FullRingScalarExtension { .. }) => {
+                Self::SetupPrefixedFullRingScalarExtension
+            }
         }
     }
 
@@ -100,7 +125,9 @@ impl RelationCandidateTopology {
     pub const fn consumes_setup_prefix(self) -> bool {
         matches!(
             self,
-            Self::SetupPrefixedEvaluationTrace | Self::SetupPrefixedCoefficientPacking
+            Self::SetupPrefixedEvaluationTrace
+                | Self::SetupPrefixedCoefficientPacking
+                | Self::SetupPrefixedFullRingScalarExtension
         )
     }
 
@@ -120,6 +147,23 @@ impl RingRelationPhase {
         absolute_level: usize,
         topology: RelationCandidateTopology,
     ) -> &'static [RingRelationMode] {
+        if matches!(
+            topology,
+            RelationCandidateTopology::DirectFullRingScalarExtension
+        ) {
+            return match self {
+                Self::QuotientPrefix | Self::ExactCoefficientRows => {
+                    &[RingRelationMode::ExactCoefficientRows]
+                }
+                Self::ReducedEvaluationSuffix => &[],
+            };
+        }
+        if matches!(
+            topology,
+            RelationCandidateTopology::SetupPrefixedFullRingScalarExtension
+        ) {
+            return &[];
+        }
         let eligible = absolute_level >= 2 && topology.is_direct_evaluation_trace();
         match (self, eligible) {
             (Self::QuotientPrefix, true) => &[
@@ -129,6 +173,7 @@ impl RingRelationPhase {
             (Self::QuotientPrefix, false) => &[RingRelationMode::QuotientLift],
             (Self::ReducedEvaluationSuffix, true) => &[RingRelationMode::ReducedEvaluation],
             (Self::ReducedEvaluationSuffix, false) => &[],
+            (Self::ExactCoefficientRows, _) => &[],
         }
     }
 
@@ -137,6 +182,7 @@ impl RingRelationPhase {
         match mode {
             RingRelationMode::QuotientLift => Self::QuotientPrefix,
             RingRelationMode::ReducedEvaluation => Self::ReducedEvaluationSuffix,
+            RingRelationMode::ExactCoefficientRows => Self::ExactCoefficientRows,
         }
     }
 }

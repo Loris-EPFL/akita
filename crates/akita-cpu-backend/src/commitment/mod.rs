@@ -24,6 +24,9 @@ mod state_policy;
 pub(crate) use api::commit;
 pub use api::GroupContext;
 pub(crate) use api::{resolve_commit_params, resolve_polynomial_group_layout};
+pub(crate) use api::{
+    resolve_full_ring_commit_params, resolve_source_layout, validate_full_ring_commit_source,
+};
 pub(crate) use outer_slices::for_each_outer_slice_input;
 pub use relation_compression::PortableCompressionOutput;
 pub use state_policy::PortableCompressionState;
@@ -49,8 +52,8 @@ pub(crate) use resources::{
 
 pub(crate) use source::{
     compile_commitment_request, CompiledCommitmentRequest, DenseCoefficientSource,
-    DenseRepresentation, DenseType, OneHotIndexWidth, PolynomialType, PredecomposedDigitPlanes,
-    ResolvedCommitSource, UnitPositionSlice,
+    DenseRepresentation, DenseType, DigitPlaneStorage, OneHotIndexWidth, PolynomialType,
+    PredecomposedDigitPlanes, ResolvedCommitSource, UnitPositionSlice,
 };
 
 pub use external::{

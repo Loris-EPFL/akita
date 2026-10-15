@@ -170,19 +170,13 @@ fn run_recursive_multi_group_onehot_with_proof_cfg<FF, const D: usize, Cfg, Proo
         .profiles()
         .final_group;
     let final_group = PolynomialGroupLayout::new(final_num_vars, final_num_polys);
-    let multi_group_key = akita_params::ScheduleLookupKey {
-        final_group,
-        precommitteds: vec![pre_descriptor; PRE_GROUPS],
-    };
-    let opening_layout = multi_group_key
-        .opening_layout()
-        .expect("multi-group layout");
-    let schedule = proof_scheme
+    let multi_group_key = akita_params::ScheduleLookupKey::decoded(final_group, vec![pre_descriptor; PRE_GROUPS]);
+    let row = proof_scheme
         .schedules()
         .resolve_key(&multi_group_key)
-        .expect("multi-group runtime schedule")
-        .schedule()
-        .clone();
+        .expect("multi-group runtime schedule");
+    let opening_layout = row.opening_layout().expect("multi-group layout");
+    let schedule = row.schedule().clone();
     let pre_points = (0..PRE_GROUPS)
         .map(|_| random_claim_point::<FF, Cfg::ExtField>(pre_num_vars, &mut point_rng))
         .collect::<Vec<_>>();
@@ -349,14 +343,7 @@ fn run_recursive_multi_group_onehot_with_proof_cfg<FF, const D: usize, Cfg, Proo
             )
             .expect("multi-group prover data");
         let selection = prover_data.selection();
-        let proof = proof_scheme
-            .batched_prove(
-                &setup,
-                prover_data,
-                &backend,
-                b"profile",
-                BasisMode::Lagrange,
-            )
+        let proof = { let native_setup = &setup; let native_opening = prover_data; let native_session = b"profile"; let native_basis = BasisMode::Lagrange; akita_pcs::prepare_native_prover_context(native_setup.expanded.descriptor(), proof_scheme.schedules(), &native_opening, native_session, &[], native_basis, 0).and_then(|native_context| proof_scheme.batched_prove(native_setup, native_opening, &backend, native_session, native_context.registry(), native_context.augmentation(), native_basis)) }
             .expect("multi-group prove");
         report_timing(label, "prove", t_prove.elapsed().as_secs_f64());
         let post_execution_ntt_metrics = backend
@@ -443,7 +430,7 @@ fn run_recursive_multi_group_onehot_with_proof_cfg<FF, const D: usize, Cfg, Proo
         .verifier(verifier_setup.clone())
         .expect("verifier for the profile setup");
     let verify =
-        |statement| verifier.batched_verify(&proof, b"profile", statement, BasisMode::Lagrange);
+        |statement| { let native_statement = statement; let native_session = b"profile"; let native_basis = BasisMode::Lagrange; akita_pcs::prepare_native_proof_context(verifier.setup().expanded().descriptor(), verifier.schedules(), &native_statement, native_session, &[], native_basis, 0).and_then(|native_context| verifier.batched_verify(&proof, native_session, native_context.registry(), native_context.augmentation(), native_statement, native_basis)) };
     run_verifier_timings(label, pools, "multi-group profile", prepare, verify);
     report_verifier_ntt_cache_size(label, verifier.terminal_ntt_cache_bytes());
 }

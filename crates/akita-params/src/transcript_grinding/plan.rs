@@ -164,6 +164,67 @@ fn append_nonterminal(
     successor: FoldSuccessor<'_>,
 ) -> Result<usize, AkitaError> {
     let opening_method = params.uniform_opening_method(layout)?;
+    if opening_method.is_full_ring_scalar_extension() {
+        params.validate_full_ring_execution(extension_degree)?;
+        if let FoldSuccessor::Recursive(next) = successor {
+            if next.setup_prefix().is_some() {
+                return Err(AkitaError::InvalidSetup(
+                    "full-ring successor cannot offload setup".into(),
+                ));
+            }
+        }
+        append_fold_queries(sink, level, params, layout)?;
+        if relation_rounds != successor.recursive_opening_num_vars()? {
+            return Err(AkitaError::InvalidSetup(
+                "full-ring strong endpoint must cover the complete successor identity source"
+                    .into(),
+            ));
+        }
+        // The A images and complete source/row manifest precede tau0, then rho.
+        sink.push(GrindingRun::proof_of_work(
+            GrindingSite::Tau0Point { level },
+            multilinear_point_loss_factor(relation_rounds)?,
+            challenge_order,
+        )?)?;
+        sink.push(GrindingRun::proof_of_work(
+            GrindingSite::Tau1Point { level },
+            multilinear_point_loss_factor(params.relation_row_index_num_vars(layout)?)?,
+            challenge_order,
+        )?)?;
+        for stage in 0..2 {
+            sink.sumcheck_rounds(SumcheckRoundBatch {
+                challenge_order,
+                protocol: SumcheckProtocol::Stage1,
+                level,
+                stage,
+                rounds: relation_rounds,
+                degree: 5,
+            })?;
+            if stage == 0 {
+                // One atomic vector of three independent E coordinates.
+                sink.push(GrindingRun::proof_of_work(
+                    GrindingSite::Stage1InterstageBatch { level, stage },
+                    independent_batch_loss_factor(3)?,
+                    challenge_order,
+                )?)?;
+            }
+        }
+        // One fresh atomic (gamma, eta_bin, eta_zero), not powers of gamma.
+        sink.push(GrindingRun::proof_of_work(
+            GrindingSite::Stage2Batch { level },
+            independent_batch_loss_factor(3)?,
+            challenge_order,
+        )?)?;
+        sink.sumcheck_rounds(SumcheckRoundBatch {
+            challenge_order,
+            protocol: SumcheckProtocol::Stage2,
+            level,
+            stage: 0,
+            rounds: relation_rounds,
+            degree: 3,
+        })?;
+        return Ok(relation_rounds);
+    }
     if opening_method.requires_extension_opening_reduction(extension_degree) {
         append_eor(sink, challenge_order, extension_degree, level, layout)?;
     }
@@ -310,10 +371,16 @@ fn append_terminal(
     terminal: &crate::TerminalFoldParams,
 ) -> Result<(), AkitaError> {
     let layout = OpeningClaimsLayout::new(predecessor_rounds, 1)?;
-    if extension_degree > 1 {
+    terminal.validate_opening_execution(extension_degree)?;
+    if terminal
+        .opening_method
+        .requires_extension_opening_reduction(extension_degree)
+    {
         append_eor(sink, challenge_order, extension_degree, level, &layout)?;
     }
-    sink.push(GrindingRun::fold_response(level))?;
+    if !terminal.opening_method.is_full_ring_scalar_extension() {
+        sink.push(GrindingRun::fold_response(level))?;
+    }
     sink.push(GrindingRun::fold_challenge_group(
         level,
         0,
@@ -353,6 +420,9 @@ fn append_eor(
     level: u32,
     layout: &OpeningClaimsLayout,
 ) -> Result<(), AkitaError> {
+    if layout.views().contains(&crate::SourceOpeningView::OriginalRamPlanesV1) {
+        return Err(AkitaError::InvalidSetup("raw RAM views do not support extension opening reduction".into()));
+    }
     let split_bits = extension_degree.trailing_zeros() as usize;
     if split_bits > layout.max_num_vars() {
         return Err(AkitaError::InvalidSetup(

@@ -83,6 +83,7 @@ impl PrecommittedProducer {
 pub struct GroupedGenerationRequest {
     final_group: PolynomialGroupLayout,
     precommitted_producers: Vec<PrecommittedProducer>,
+    source_views: Vec<akita_params::SourceOpeningView>,
 }
 
 impl GroupedGenerationRequest {
@@ -92,21 +93,33 @@ impl GroupedGenerationRequest {
         precommitted_producers: Vec<PrecommittedProducer>,
     ) -> Self {
         Self {
+            source_views: vec![akita_params::SourceOpeningView::Decoded; precommitted_producers.len() + 1],
             final_group,
             precommitted_producers,
         }
+    }
+
+    /// Bind independent ordered consuming views without changing any producer.
+    pub fn with_views(
+        final_group: PolynomialGroupLayout,
+        precommitted_producers: Vec<PrecommittedProducer>,
+        source_views: Vec<akita_params::SourceOpeningView>,
+    ) -> Result<Self, AkitaError> {
+        ScheduleLookupKey::with_views(
+            final_group,
+            precommitted_producers.iter().copied().map(PrecommittedProducer::descriptor).collect(),
+            source_views.clone(),
+        )?;
+        Ok(Self { final_group, precommitted_producers, source_views })
     }
 
     #[must_use]
     pub fn key(&self) -> ScheduleLookupKey {
         ScheduleLookupKey {
             final_group: self.final_group,
-            precommitteds: self
-                .precommitted_producers
-                .iter()
-                .copied()
-                .map(PrecommittedProducer::descriptor)
-                .collect(),
+            precommitteds: self.precommitted_producers.iter().copied()
+                .map(PrecommittedProducer::descriptor).collect(),
+            source_views: self.source_views.clone(),
         }
     }
 

@@ -221,6 +221,26 @@ where
 ///
 /// Returns an error if the request is empty, mixes polynomial dimensions, or
 /// exceeds the prover setup capacity.
+pub(crate) fn resolve_source_layout<F: Field, P: CommitmentSource<F>>(
+    polys: &[P],
+) -> Result<akita_params::PolynomialGroupLayout, AkitaError> {
+    let first = polys.first().ok_or_else(|| {
+        AkitaError::InvalidInput("commit requires at least one polynomial".into())
+    })?;
+    let num_vars = first.descriptor()?.num_vars();
+    for source in &polys[1..] {
+        if source.descriptor()?.num_vars() != num_vars {
+            return Err(AkitaError::InvalidInput(
+                "batched source variable counts differ".into(),
+            ));
+        }
+    }
+    Ok(akita_params::PolynomialGroupLayout::new(
+        num_vars,
+        polys.len(),
+    ))
+}
+
 pub(crate) fn resolve_polynomial_group_layout<F, P>(
     polys: &[P],
     setup: &AkitaExpandedSetup<F>,
@@ -229,19 +249,8 @@ where
     F: Field,
     P: CommitmentSource<F>,
 {
-    if polys.is_empty() {
-        return Err(AkitaError::InvalidInput(
-            "commit requires at least one polynomial".to_string(),
-        ));
-    }
-    let num_vars = polys[0].descriptor()?.num_vars();
-    for poly in &polys[1..] {
-        if poly.descriptor()?.num_vars() != num_vars {
-            return Err(AkitaError::InvalidInput(
-                "all polynomials in a batched commit must have the same num_vars".to_string(),
-            ));
-        }
-    }
+    let layout = resolve_source_layout::<F, P>(polys)?;
+    let num_vars = layout.num_vars();
     if polys.len() > setup.descriptor.max_num_batched_polys {
         return Err(AkitaError::InvalidInput(format!(
             "commit received {} polynomials but setup supports at most {}",
@@ -255,10 +264,7 @@ where
             num_vars, setup.descriptor.max_num_vars
         )));
     }
-    Ok(akita_params::PolynomialGroupLayout::new(
-        num_vars,
-        polys.len(),
-    ))
+    Ok(layout)
 }
 
 #[cfg(test)]
@@ -307,8 +313,53 @@ where
     Ok(())
 }
 
-/// Reject coefficients outside the intersection of the source declaration and
-/// the exact balanced-digit interval committed by this row.
+/// Admit a structurally one-hot source to the full-ring Boolean whole grid.
+///
+/// `OneHot { chunk_size: k }` guarantees every coefficient is zero or one,
+/// hence at most one unit in each singleton chunk, regardless of `k`. The
+/// singleton contract charges the entire grid (ring L1 <= 128 and squared L2
+/// <= logical length), so it does not rely on the stronger source sparsity.
+/// This implication changes admission only: the descriptor and its actual
+/// stride remain untouched for commitment and original-source digit access.
+/// Non-Boolean contracts retain the legacy exact structural check.
+fn ensure_full_ring_sources_match_declared_class<F, P>(
+    polys: &[P],
+    contract: CommittedSourceContract,
+    digits: GadgetDigits,
+    encoding: akita_params::CommittedSourceEncoding,
+    full_ring_e2: bool,
+) -> Result<(), AkitaError>
+where
+    F: Field,
+    P: CommitmentSource<F>,
+{
+    if contract.class().required_onehot_chunk_size() != Some(1) {
+        return ensure_sources_match_declared_class::<F, P>(polys, contract);
+    }
+    if !full_ring_e2
+        || encoding != akita_params::CommittedSourceEncoding::CanonicalCoefficientTable
+        || digits != GadgetDigits::new(5, 1)
+    {
+        return Err(AkitaError::InvalidSetup(
+            "Boolean whole-grid admission requires canonical full-ring E2 with one base32 digit"
+                .into(),
+        ));
+    }
+    for poly in polys {
+        if !matches!(
+            poly.descriptor()?.class(),
+            crate::commitment::CommitSourceClass::OneHot { .. }
+        ) {
+            return Err(AkitaError::InvalidInput(
+                "Boolean whole-grid producer requires a structurally unit one-hot source".into(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Admit original plane envelopes before considering decoded coefficient reach.
+/// Canonical sources still use the exact declared/representable intersection.
 fn ensure_sources_fit_accepted_interval<F, P>(
     polys: &[P],
     inner_digits: GadgetDigits,
@@ -318,6 +369,37 @@ where
     F: Field + CanonicalEncoding,
     P: CommitmentSource<F>,
 {
+    if contract.decomposition().field_bits() != F::MODULUS_BITS {
+        return Err(AkitaError::InvalidSetup(
+            "producer contract field width differs from the backend field".into(),
+        ));
+    }
+    let original_geometry = contract.original_plane_geometry();
+    if original_geometry
+        .is_some_and(|geometry| geometry != (inner_digits.log_basis, inner_digits.num_digits))
+    {
+        return Err(AkitaError::InvalidInput(
+            "original source contract differs from the committed plane geometry".into(),
+        ));
+    }
+    for poly in polys {
+        let intrinsic_geometry = match poly.descriptor()?.class() {
+            crate::commitment::CommitSourceClass::OriginalBalancedDigitPlanes {
+                log_basis,
+                num_digits,
+            } => Some((log_basis, num_digits)),
+            _ => None,
+        };
+        if intrinsic_geometry != original_geometry {
+            return Err(AkitaError::InvalidInput(
+                "original digit planes require their full-width original-plane producer contract"
+                    .into(),
+            ));
+        }
+    }
+    if original_geometry.is_some() {
+        return Ok(());
+    }
     let modulus = (-F::one())
         .to_u128_checked()
         .expect("Akita field element must fit in u128")
@@ -373,10 +455,9 @@ where
             }
             *commit_params
         } else {
-            let key = ScheduleLookupKey {
-                final_group: polynomial_group_layout,
-                precommitteds: context.precommitted_groups.as_slice().to_vec(),
-            };
+            let key = ScheduleLookupKey::decoded(
+                polynomial_group_layout, context.precommitted_groups.as_slice().to_vec(),
+            );
             let scheduled_row = schedules.resolve_key(&key)?;
 
             // A final group with precommitted groups consumes the row's whole
@@ -419,6 +500,96 @@ where
     )?;
 
     Ok((commit_params, contract))
+}
+
+/// Resolve the same source admission gates against literal installed roles,
+/// without fabricating a legacy shared-prefix setup descriptor.
+pub(crate) fn resolve_full_ring_commit_params<Cfg, P>(
+    polys: &[P],
+    setup: &akita_types::FullRingSetupDescriptor,
+    source_id: akita_types::FullRingSourceId,
+    schedules: &TrustedScheduleCatalog<Cfg>,
+    context: GroupContext<'_>,
+) -> Result<(GroupCommitPhaseParams, CommittedSourceContract), AkitaError>
+where
+    Cfg: CommitmentConfig,
+    P: CommitmentSource<Cfg::Field>,
+{
+    let layout = resolve_source_layout::<Cfg::Field, P>(polys)?;
+    let params = match context.parameter_source {
+        GroupParameterSource::Explicit(params) => *params,
+        GroupParameterSource::Scheduler => {
+            schedules
+                .resolve_key(&ScheduleLookupKey::decoded(
+                    layout, context.precommitted_groups.as_slice().to_vec(),
+                ))?
+                .profiles()
+                .final_group
+        }
+    };
+    let contract = Cfg::committed_source_contract()?;
+    validate_full_ring_commit_source::<Cfg::Field, P>(
+        polys,
+        setup,
+        source_id,
+        params,
+        contract,
+        layout,
+        Cfg::opening_family().is_full_ring_e2()
+            && Cfg::EXT_DEGREE == 2
+            && <Cfg::ExtField as jolt_field::ExtField<Cfg::Field>>::DEGREE == 2,
+    )?;
+    Ok((params, contract))
+}
+
+/// Admit a frozen producer independently of the opening family's own source.
+pub(crate) fn validate_full_ring_commit_source<F, P>(
+    polys: &[P],
+    setup: &akita_types::FullRingSetupDescriptor,
+    source_id: akita_types::FullRingSourceId,
+    params: GroupCommitPhaseParams,
+    contract: CommittedSourceContract,
+    layout: akita_params::PolynomialGroupLayout,
+    native_e2: bool,
+) -> Result<(), AkitaError>
+where
+    F: Field + CanonicalEncoding,
+    P: CommitmentSource<F>,
+{
+    params.validate_frozen_precommit(F::MODULUS_BITS)?;
+    if contract.decomposition().field_bits() != F::MODULUS_BITS {
+        return Err(AkitaError::InvalidSetup(
+            "producer contract field width differs from the backend field".into(),
+        ));
+    }
+    let source = setup.source(source_id)?;
+    if params.group != layout
+        || source.polynomials != layout.num_polynomials()
+        || source.blocks != params.blocks.live_blocks
+        || source.positions != params.blocks.positions_per_block
+        || source.digit_depth != params.inner.digits.num_digits
+        || source.rank != params.inner.matrix.output_rank()
+        || params.inner.matrix.ring_dimension() != 128
+        || params.outer.matrix.ring_dimension() != 128
+        || params.outer.matrix.output_rank() != 1
+        || params.outer_slice_count != akita_params::CommitmentSliceCount::ONE
+        || params.inner.digits.log_basis != 5
+        || params.outer.digits.log_basis != 5
+        || params.outer.digits.num_digits != 26
+    {
+        return Err(AkitaError::InvalidSetup(
+            "source commitment differs from installed full-ring geometry".into(),
+        ));
+    }
+    ensure_full_ring_sources_match_declared_class::<F, P>(
+        polys,
+        contract,
+        params.inner.digits,
+        source.source_encoding,
+        native_e2,
+    )?;
+    ensure_sources_fit_accepted_interval::<F, P>(polys, params.inner.digits, contract)?;
+    Ok(())
 }
 
 /// Commit one homogeneous polynomial group in its complete parameter context.

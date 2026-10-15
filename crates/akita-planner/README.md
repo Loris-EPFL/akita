@@ -66,14 +66,12 @@ Estimates are neither serialized nor Fiat–Shamir bound.
 The public search entry point is
 `find_schedule(&key, final_source_contract, &precommitted_source_contracts, &policy, ring_challenge_config)`.
 
-`key: ScheduleLookupKey` describes the supported root opening shape.
-Single-group openings store one `PolynomialGroupLayout` in `final_group` and
-leave `precommitteds` empty:
-
-- `num_vars`: the number of Boolean variables in that group's opened
-  polynomial domain.
-- `num_polynomials`: the number of polynomials in the single commitment group,
-  opened at that group's point (one claim per polynomial).
+`key: ScheduleLookupKey` describes immutable producer geometry and independent
+ordered consuming views (`source_views`, prefix then final). `single` and
+`decoded(final_group, precommitteds)` intentionally select ordinary Decoded
+openings; `with_views` checks an explicit vector. Source arity remains the
+producer's arity: the registered original-RAM view has source16 and point21,
+not a fabricated nv21 or P26 commitment.
 
 Multi-group roots use the same lookup key with any earlier groups recorded as
 `GroupCommitPhaseParams` in `precommitteds`. For a single-group batch,
@@ -101,15 +99,55 @@ authority. Uniform policies carry one A, B, and D value in that mode. Adaptive
 policies carry separate bounded domains. The selected schedule records the
 exact dimensions used at each level.
 
+### Frozen original rosters
+
+`find_schedule_for_frozen_profiles(profiles, final_contract, prefix_contracts,
+source_views, policy, ring_challenge_config)` preserves every original A/B/F,
+source decomposition, split, slice and rank. VM callers designate the last
+Main as final; arbitrary earlier Main and original RAM groups remain distinct
+prefix groups. Decoded Dense callers designate their last original as final.
+Interchangeable metadata classes include the profile, authentic producer
+contract and view, not the group's index or source identity.
+
+The initial native128/base32/single-chunk root requires all-valid response
+depth3 for Main and RAM. `frozen_response_depth_choices` exposes the finite
+admitted depth interval from the original A capacity, rather than only the
+honest tail-policy minimum. The Dense nv14 producer retains A512/B64/source
+base8192/depth10/eight slices and consumes carrier64/h8/base8/depth7 with
+unfiltered production64(31,10), never production512. Its joint honest
+nonce-zero rejection certificate is strictly below `5H/2^48` under the
+approved ideal indexed law; no per-group `1/8` product is used.
+
+`plan_frozen_source_roster(FrozenRosterRequest, ring_challenge_config)` returns
+an independently audited complete row and structured ledger. The request
+provides the actual sealed query-equation count separately from source-group,
+scalar-endpoint and ring-shell counts. The ledger reports original source
+norms, physical response unions, exact signed gates/diameters/radii, D-native
+contributions and final-first offsets, complete sliced F/shared H images,
+every selected SIS occurrence, all local grinding/error inputs, setup/slot and
+verifier-scan envelopes, encoded row size and selection digest. The row itself
+contains every newly discovered suffix level and the actual A-only terminal.
+No saved singleton suffix is copied.
+
+This remains a finite structural planning API, not runtime source admission or
+catalog installation. The caller binds original identities, boundary aliases,
+query ownership, global range/source cuts, reachable mixed certificate pairs
+and extraction-tree work. Matrix radii and local grinding records are inputs
+to that separate ledger; modeled Quantum128 table admission is not a numerical
+runtime-conditioned SIS advantage or a QROM/ZK claim. A failed raw request
+never retries Decoded, adapts a scalar guide or changes an original profile.
+
+
 ## Resolution Flow
 
 The planner is not a runtime resolver. Artifact generation materializes every
 selected `FoldSchedule`, validates the expanded rows, and writes one canonical
 artifact per family. An application loads approved bytes into a
 `TrustedScheduleCatalog<Cfg>` and passes that config-bound catalog to its
-`AkitaCommitmentScheme`. Honest proving resolves an exact profile key;
-verification resolves the statement's 32-byte row selection. A missing row is
-unsupported and never triggers search.
+`AkitaCommitmentScheme`. Honest proving resolves an exact profile **and ordered
+view** key; `ValidatedScheduleCatalog::resolve_profiles` therefore requires
+explicit views. Verification resolves the statement's 32-byte row selection.
+A missing row is unsupported and never triggers search or a decoded retry.
 
 Generation and artifact decoding are deterministic functions of the lookup key,
 `PlannerPolicy`, and ring-challenge closure. This ensures that prover and
@@ -402,7 +440,8 @@ Witness-only recursive levels open one claim. A level that consumes an incoming 
 
 ### Extension Fields
 
-`PlannerPolicy` carries both claim and challenge extension degrees. Emitted folds
+`PlannerPolicy` carries both claim and challenge extension degrees and an explicit
+`opening_family`. The following level policy belongs to `Legacy`: emitted folds
 at levels 0 and 1 use subring coefficient packing and do not carry EOR. Later
 `EvaluationTrace` suffixes and the terminal opening retain method-aware EOR
 pricing when the claim field is an extension.
@@ -416,6 +455,46 @@ The fp128 presets use extension degree one, so their evaluation-trace folds do
 not run EOR. The fp32 and fp64 presets use proper extension fields. Their later
 evaluation-trace folds run one EOR that batches the dense setup prefix with the
 recursive suffix witness. The planner prices that combined opening shape.
+
+`FullRingE2OuterDirect` and `FullRingE2InnerRecursive` are distinct native
+`E2Nonresidue5/RawCoefficientV1` policies. Their catalog digests differ.
+Both preserve original canonical K sources and use two degree-128 coefficient
+planes (physical partial width 256), the `(24,16)` full-ring shell, exact
+coefficient rows, and complete original F/H paths. No EOR, ring-switch alpha,
+setup offload, response retries, or tensor source conversion is selected.
+Its base32 strong wire has two degree-five `(4,4)` product stages, independent
+three-coordinate affine mixing, and a degree-three fused endpoint; every round
+sends all coefficients.
+
+Ordinary outer selection is a finite grouped-root/A-only-terminal search, not
+the legacy contraction DP. It reuses producer admission and root geometry,
+enumerates every dyadic terminal block split, and uses installed SIS cells.
+The family orders candidates by expanded role coefficient sum, fixed
+root/terminal payload bytes, full physical successor capacity, and canonical
+descriptor. Strong sumcheck costs are separately included in the proof estimate.
+The terminal source is the identity padded K table and its descriptor binds a
+signed fixed-width little-endian response with bound `896 * B`.
+
+The inner policy admits the fixed compact root with direct Boolean Main
+(`P=56`, `N=2^16`), the original `N=2^22` receiver and two RAM endpoints.
+It keeps the three shrinking edges `2^22 -> 2^21 -> 2^20 -> 2^19`, followed
+by the actual A-only terminal (`M=512`, `B=8`, response bound 7168).
+The two RAM handles share their original A/B/F roles only when the complete
+source geometry, raw map, encoding and role chain match. Each opening level
+has separate D/H roles, even when matrix shapes coincide.
+
+Root admission also matches policy, setup family and the actual live compiler:
+outer/direct uses the outer SHAKE compiler; inner/registered uses H1610.
+The source is still K-valued. The receiver retains its live packed prefix
+separately from the full committed extent; zeros up to that extent are part of
+the original source, not a smaller commitment or an allocated replacement.
+
+This algorithm does not install a profile: the existing catalog provenance,
+row-digest, producer-contract, source-map and independent validation requirements
+still apply. No new generated catalog rows or certificates are supplied by this
+implementation. Expanded role work is distinct from the legacy maximum shared
+setup-prefix storage capacity.
+
 
 ## Crate Boundary
 

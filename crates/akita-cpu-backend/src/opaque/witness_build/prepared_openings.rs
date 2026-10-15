@@ -15,6 +15,7 @@ enum ConsumerOpeningKind<F: Field> {
     CoefficientPacking {
         partials_by_claim: Vec<crate::opaque::SubringCoefficientPackingPartials<F>>,
     },
+    FullRing,
 }
 
 /// Opaque consumer state joining prepared opening rows to their E digits.
@@ -102,6 +103,34 @@ impl<F: Field + CanonicalEncoding> PreparedOpeningWitness<F> {
         })
     }
 
+    pub(crate) fn full_ring<const D: usize>(
+        partials: akita_types::full_ring::FullRingPartials<F>,
+        depth_open: usize,
+        log_basis: u32,
+    ) -> Result<Self, AkitaError> {
+        if D != 128 || partials.view().degree() != 128 || partials.extension_degree() != 2 {
+            return Err(AkitaError::InvalidInput(
+                "full-ring E planes require native D128".into(),
+            ));
+        }
+        // SAFETY: the partial constructor fixes complete native128 planes, D
+        // was checked above, and CyclotomicRing is transparent over [F; D].
+        let typed = unsafe {
+            std::slice::from_raw_parts(
+                partials
+                    .coefficients()
+                    .as_ptr()
+                    .cast::<akita_algebra::CyclotomicRing<F, D>>(),
+                partials.coefficients().len() / D,
+            )
+        };
+        let e_hat = decompose_opening_rows::<F, D>(&[typed], 2, depth_open, log_basis)?;
+        Ok(Self {
+            e_hat,
+            kind: ConsumerOpeningKind::FullRing,
+        })
+    }
+
     fn e_hat(&self) -> &DigitBlocks {
         &self.e_hat
     }
@@ -141,6 +170,15 @@ impl<F: Field + CanonicalEncoding> PreparedOpeningWitness<F> {
                     role_dims,
                 ))
             }
+            (
+                ConsumerOpeningKind::FullRing,
+                akita_types::OpeningFamily::FullRingScalarExtension(_),
+            ) => Ok(RingRelationGroupWitness::from_full_ring_parts(
+                fold,
+                self.e_hat,
+                inner_relation,
+                role_dims,
+            )),
             _ => Err(AkitaError::InvalidSetup(
                 "prepared opening material and fold challenges disagree".into(),
             )),
@@ -151,6 +189,7 @@ impl<F: Field + CanonicalEncoding> PreparedOpeningWitness<F> {
 pub(crate) type PublicPreparedRelationOpening<F, E> = akita_types::OpeningFamily<
     akita_types::PreparedOpeningPoint<F, E>,
     akita_types::PreparedSubringCoefficientPackingPoint<E>,
+    akita_types::full_ring::FullRingRawPoint<E>,
 >;
 
 type PreparedGroupWitnessOutput<F, E> = (
@@ -216,6 +255,9 @@ where
             akita_params::RingRelationMode::ReducedEvaluation => {
                 RelationDQuotientWitness::ReducedEvaluation
             }
+            akita_params::RingRelationMode::ExactCoefficientRows => {
+                RelationDQuotientWitness::ExactCoefficientRows
+            }
         };
         return Ok((RingVec::from_coeffs(Vec::new()), quotients));
     }
@@ -233,6 +275,10 @@ where
         d_rows::RelationDRows::ReducedEvaluation { reduced } => Ok((
             RingVec::from_ring_elems(&reduced),
             RelationDQuotientWitness::ReducedEvaluation,
+        )),
+        d_rows::RelationDRows::ExactCoefficientRows { reduced } => Ok((
+            RingVec::from_ring_elems(&reduced),
+            RelationDQuotientWitness::ExactCoefficientRows,
         )),
     }
 }

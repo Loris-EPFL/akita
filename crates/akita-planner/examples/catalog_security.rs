@@ -141,11 +141,9 @@ fn main() -> Result<(), String> {
             .adps16_quantum_constraint()
             .minimum_log2_rop;
         for resolved in catalog.rows() {
-            let profiles = resolved.profiles();
-            let key = akita_params::ScheduleLookupKey {
-                final_group: profiles.final_group.group,
-                precommitteds: profiles.precommitteds.clone(),
-            };
+            let key = resolved.lookup_key().map_err(|error| {
+                format!("{} row lookup identity: {error}", family.family_name())
+            })?;
             if final_group.is_some_and(|(num_vars, num_polynomials)| {
                 key.final_group.num_vars() != num_vars
                     || key.final_group.num_polynomials() != num_polynomials

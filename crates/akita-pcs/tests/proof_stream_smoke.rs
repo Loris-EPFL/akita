@@ -74,14 +74,7 @@ fn onehot_fp32_roundtrip_inner() {
     )
     .unwrap();
     let selection = prover_data.selection();
-    let proof = scheme
-        .batched_prove(
-            &setup,
-            prover_data,
-            &backend,
-            b"native-port-onehot-fp32",
-            BasisMode::Lagrange,
-        )
+    let proof = { let native_setup = &setup; let native_opening = prover_data; let native_session = b"native-port-onehot-fp32"; let native_basis = BasisMode::Lagrange; akita_pcs::prepare_native_prover_context(native_setup.expanded.descriptor(), scheme.schedules(), &native_opening, native_session, &[], native_basis, 0).and_then(|native_context| scheme.batched_prove(native_setup, native_opening, &backend, native_session, native_context.registry(), native_context.augmentation(), native_basis)) }
         .unwrap();
     let verify_group = PolynomialGroupClaims::new(point, vec![opening], &commitment).unwrap();
     let verify_claims = OpeningClaims::from_groups(vec![verify_group]).unwrap();
@@ -90,12 +83,7 @@ fn onehot_fp32_roundtrip_inner() {
     scheme
         .verifier(verifier_setup.clone())
         .and_then(|verifier| {
-            verifier.batched_verify(
-                &proof,
-                b"native-port-onehot-fp32",
-                statement,
-                BasisMode::Lagrange,
-            )
+            { let native_statement = statement; let native_session = b"native-port-onehot-fp32"; let native_basis = BasisMode::Lagrange; akita_pcs::prepare_native_proof_context(verifier.setup().expanded().descriptor(), verifier.schedules(), &native_statement, native_session, &[], native_basis, 0).and_then(|native_context| verifier.batched_verify(&proof, native_session, native_context.registry(), native_context.augmentation(), native_statement, native_basis)) }
         })
         .unwrap();
 }
@@ -138,14 +126,7 @@ fn dense_fp128_roundtrip_inner() {
     )
     .unwrap();
     let selection = prover_data.selection();
-    let proof = scheme
-        .batched_prove(
-            &setup,
-            prover_data,
-            &backend,
-            b"native-port-smoke",
-            BasisMode::Lagrange,
-        )
+    let proof = { let native_setup = &setup; let native_opening = prover_data; let native_session = b"native-port-smoke"; let native_basis = BasisMode::Lagrange; akita_pcs::prepare_native_prover_context(native_setup.expanded.descriptor(), scheme.schedules(), &native_opening, native_session, &[], native_basis, 0).and_then(|native_context| scheme.batched_prove(native_setup, native_opening, &backend, native_session, native_context.registry(), native_context.augmentation(), native_basis)) }
         .unwrap();
     let verify_group = PolynomialGroupClaims::new(point, vec![opening], &commitment).unwrap();
     let verify_claims = OpeningClaims::from_groups(vec![verify_group]).unwrap();
@@ -154,7 +135,7 @@ fn dense_fp128_roundtrip_inner() {
     scheme
         .verifier(verifier_setup.clone())
         .and_then(|verifier| {
-            verifier.batched_verify(&proof, b"native-port-smoke", statement, BasisMode::Lagrange)
+            { let native_statement = statement; let native_session = b"native-port-smoke"; let native_basis = BasisMode::Lagrange; akita_pcs::prepare_native_proof_context(verifier.setup().expanded().descriptor(), verifier.schedules(), &native_statement, native_session, &[], native_basis, 0).and_then(|native_context| verifier.batched_verify(&proof, native_session, native_context.registry(), native_context.augmentation(), native_statement, native_basis)) }
         })
         .unwrap();
 }

@@ -397,6 +397,7 @@ fn restricted_search_recovers_pruned_query_tradeoff() {
         setup_field_budget: None,
         root_lookup_key: Some(&key),
         root_main_constraint: None,
+        root_final_profile: None,
         adaptation_guide: None,
         root_source_contract: Some(OneHot::committed_source_contract().unwrap()),
         precommitted_source_contracts: &[],

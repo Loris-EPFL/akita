@@ -50,13 +50,17 @@ pub(crate) fn begin_cpu_recursive_witness<F, E>(
 >
 where
     F: Field + CanonicalEncoding + AkitaSerialize + Ring + Send + Sync + 'static,
-    E: jolt_field::ExtField<F> + akita_types::FpExtEncoding<F> + Send + Sync + 'static,
+    E: jolt_field::ExtField<F> + Send + Sync + 'static,
 {
-    let ctx = OperationCtx::new(
-        backend,
-        prepared,
-        crate::opaque::ComputeBackendSetup::prepared_expanded_setup(backend, prepared),
-    )?;
+    let ctx = if level.ring_relation_mode == akita_params::RingRelationMode::ExactCoefficientRows {
+        OperationCtx::for_full_ring(backend, prepared)?
+    } else {
+        OperationCtx::new(
+            backend,
+            prepared,
+            crate::opaque::ComputeBackendSetup::prepared_expanded_setup(backend, prepared)?,
+        )?
+    };
     if prepared_group_openings.len() != opening_batch.num_groups()
         || commitment_material.len() != opening_batch.num_groups()
         || opening_bindings.len() != opening_batch.num_groups()
@@ -95,7 +99,9 @@ where
             scalar_openings,
         ));
     }
-    crate::arithmetic::requirements::warm_relation_ntt_cache(backend, prepared, level)?;
+    if !level.ring_relation_mode.is_exact_coefficient_rows() {
+        crate::arithmetic::requirements::warm_relation_ntt_cache(backend, prepared, level)?;
+    }
     let dims = level.role_dims();
     let (v, d_quotients) = dispatch_for_field!(
         ProtocolDispatchSlot::Role(RingRole::Opening),
@@ -113,6 +119,7 @@ where
     )?;
     let payload = prepare_relation_payload(
         &ctx,
+        binding.fold_level(),
         level,
         opening_batch,
         relation_rhs_layout,
@@ -127,7 +134,21 @@ where
         opening_payload_ring_dimension,
         compression,
     } = payload;
+    let full_ring_context =
+        if level.ring_relation_mode == akita_params::RingRelationMode::ExactCoefficientRows {
+            Some(Box::new(akita_types::full_ring::FullRingBuildContext::new(
+                prepared_group_openings
+                    .iter()
+                    .map(|opening| opening.full_ring_public())
+                    .collect::<Result<Vec<_>, _>>()?,
+                group_commitments.to_vec(),
+                opening_payload.clone(),
+            )?) as Box<dyn std::any::Any + Send + Sync>)
+        } else {
+            None
+        };
     let build_handle = crate::opaque::CpuWitnessBuildHandle {
+        full_ring_context,
         binding,
         opening_bindings,
         assembly_state: CpuRecursiveWitnessAssemblyState {
@@ -228,7 +249,7 @@ where
             "recursive witness plan disagrees with its relation instance".into(),
         ));
     }
-    let expanded = crate::opaque::ComputeBackendSetup::prepared_expanded_setup(backend, prepared);
+    let expanded = crate::opaque::ComputeBackendSetup::prepared_expanded_setup(backend, prepared)?;
     let ctx = OperationCtx::new(backend, prepared, expanded)?;
     let witness_handle = cpu_recursive_witness_build(
         relation,
@@ -242,8 +263,121 @@ where
     Ok(witness_handle)
 }
 
-fn prepare_relation_payload<F, B>(
-    ring_switch_ctx: &OperationCtx<'_, F, B>,
+/// Finish the same retained assembly under the exact coefficient-row family.
+/// No alpha-era gamma, ring-switch point, or synthetic relation instance exists.
+pub(crate) fn finish_cpu_full_ring_witness<F, E>(
+    backend: &crate::opaque::CpuBackend<F, E>,
+    prepared: &crate::opaque::CpuPreparedSetup<F>,
+    build_handle: crate::opaque::CpuWitnessBuildHandle<F>,
+    fold_inputs: Vec<crate::opaque::RecursiveWitnessFoldInput<crate::opaque::CpuAcceptedFold<F>>>,
+    commitment_ring_dimension: usize,
+) -> Result<crate::opaque::CpuWitnessHandle, AkitaError>
+where
+    F: Field + CanonicalEncoding + AkitaSerialize + Ring + Send + Sync + 'static,
+    E: jolt_field::ExtField<F> + 'static,
+{
+    let crate::opaque::CpuWitnessBuildHandle {
+        binding,
+        assembly_state,
+        level,
+        opening_batch,
+        full_ring_context,
+        ..
+    } = build_handle;
+    if level.ring_relation_mode != akita_params::RingRelationMode::ExactCoefficientRows
+        || commitment_ring_dimension != 128
+        || level.witness_chunk.num_chunks != 1
+    {
+        return Err(AkitaError::InvalidInput(
+            "full-ring successor requires exact rows and unsplit native128 geometry".into(),
+        ));
+    }
+    let build_context = *full_ring_context
+        .ok_or_else(|| {
+            AkitaError::InvalidInput(
+                "selected witness is missing original full-ring relation metadata".into(),
+            )
+        })?
+        .downcast::<akita_types::full_ring::FullRingBuildContext<F, E>>()
+        .map_err(|_| AkitaError::InvalidInput("full-ring metadata field mismatch".into()))?;
+    let challenges = fold_inputs
+        .iter()
+        .map(|fold| {
+            akita_types::full_ring::full_ring_dense_challenges::<F>(fold.challenges().ambient_a())
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let CpuRecursiveWitnessAssemblyState {
+        group_openings,
+        d_quotients,
+        inner_relation,
+        compression,
+    } = assembly_state;
+    if fold_inputs.len() != opening_batch.num_groups()
+        || group_openings.len() != fold_inputs.len()
+        || inner_relation.len() != fold_inputs.len()
+        || compression.is_none()
+    {
+        return Err(AkitaError::InvalidInput(
+            "complete full-ring successor source set is missing".into(),
+        ));
+    }
+    let context = akita_types::full_ring::FullRingWitnessContext::new(
+        binding.fold_level(),
+        build_context,
+        level,
+        opening_batch,
+        challenges,
+    )?;
+    let level = context.level();
+    let opening_batch = context.opening_batch();
+    let layout = context.layout();
+    let mut groups = Vec::with_capacity(fold_inputs.len());
+    for (index, ((fold, opening), inner)) in fold_inputs
+        .into_iter()
+        .zip(group_openings)
+        .zip(inner_relation)
+        .enumerate()
+    {
+        let parameters = level.group_params_geometry(opening_batch, index)?;
+        let dims = level.group_role_dims_geometry(opening_batch, index)?;
+        let sources = opening_batch.group_layout(index)?.num_polynomials();
+        if !parameters.opening_method().is_full_ring_scalar_extension()
+            || inner.ring_dimension() != dims.d_a()
+            || inner.source_count() != sources
+        {
+            return Err(AkitaError::InvalidInput(
+                "full-ring successor original A material mismatch".into(),
+            ));
+        }
+        fold.fold_handle()
+            .validate_for_build(&binding, &parameters, sources, 1)?;
+        let (accepted, challenges) = fold.into_fold_handle_and_challenges();
+        groups.push(opening.into_relation_witness(accepted, challenges, inner, dims)?);
+    }
+    let witness = RingRelationWitness::from_groups(groups, d_quotients, compression);
+    let ctx = OperationCtx::for_full_ring(backend, prepared)?;
+    let mut witness = super::finalize::cpu_witness_build_with_layout(
+        None,
+        opening_batch,
+        layout,
+        witness,
+        &ctx,
+        &ctx,
+        level,
+        commitment_ring_dimension,
+        binding,
+    )?;
+    witness.full_ring_context = Some(std::sync::Arc::new(context));
+    Ok(witness)
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "keep original role level, public commitments and retained material separate from geometry"
+)]
+fn prepare_relation_payload<F, E>(
+    ring_switch_ctx: &OperationCtx<'_, F, crate::opaque::CpuBackend<F, E>>,
+    fold_level: u32,
     level: &CommittedGroupParams,
     opening_batch: &akita_params::OpeningClaimsLayout,
     layout: &akita_params::RelationRhsLayout,
@@ -253,7 +387,7 @@ fn prepare_relation_payload<F, B>(
 ) -> Result<PreparedRelationPayload<F>, AkitaError>
 where
     F: Field + CanonicalEncoding + AkitaSerialize,
-    B: crate::opaque::CompressionComputeBackend<F>,
+    crate::opaque::CpuBackend<F, E>: crate::opaque::CompressionComputeBackend<F>,
 {
     if commitments.len() != opening_batch.num_groups()
         || materials.len() != opening_batch.num_groups()
@@ -320,13 +454,32 @@ where
                 )
             })
             .collect::<Result<Vec<_>, _>>()?;
-        let (compression, report) = materialize_compression_witness(
-            ring_switch_ctx,
-            layout,
-            sources,
-            v,
-            level.ring_relation_mode,
-        )?;
+        let (compression, report) = if level.ring_relation_mode.is_exact_coefficient_rows() {
+            (
+                super::compression_witness::materialize_full_ring_compression_witness(
+                    ring_switch_ctx.backend(),
+                    &ring_switch_ctx
+                        .backend()
+                        .full_ring_setup()?
+                        .descriptor()
+                        .level(fold_level as usize)?
+                        .compression,
+                    layout,
+                    sources,
+                    v,
+                )?,
+                None,
+            )
+        } else {
+            let (compression, report) = materialize_compression_witness(
+                ring_switch_ctx,
+                layout,
+                sources,
+                v,
+                level.ring_relation_mode,
+            )?;
+            (compression, Some(report))
+        };
         let opening = compression.source(CompressionSourceId::Opening)?;
         let opening_ring_dimension = opening
             .witness()
@@ -355,16 +508,18 @@ where
             &group_payloads,
             opening.terminal.coefficients(),
         )?;
-        tracing::info!(
-            sources = report.sources,
-            maps = report.maps,
-            batches = report.batches.len(),
-            source_bytes = report.source_bytes,
-            terminal_bytes = report.terminal_bytes,
-            retained_bytes = report.retained_packed_witness_bytes,
-            peak_scratch_bytes = report.executor_peak_scratch_bytes,
-            "materialized compression witness"
-        );
+        if let Some(report) = report {
+            tracing::info!(
+                sources = report.sources,
+                maps = report.maps,
+                batches = report.batches.len(),
+                source_bytes = report.source_bytes,
+                terminal_bytes = report.terminal_bytes,
+                retained_bytes = report.retained_packed_witness_bytes,
+                peak_scratch_bytes = report.executor_peak_scratch_bytes,
+                "materialized compression witness"
+            );
+        }
         return Ok(PreparedRelationPayload {
             inner,
             relation_rhs,
@@ -403,4 +558,5 @@ where
 pub(super) type GroupFoldedOpening<F> = akita_types::OpeningFamily<
     RingVec<F>,
     crate::arithmetic::coefficient_packing_fold::CoefficientPackingFoldProduct<F>,
+    (),
 >;

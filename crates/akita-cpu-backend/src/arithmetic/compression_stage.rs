@@ -31,7 +31,8 @@ impl<F: Field> CpuCompressionRetention<F> {
                 .ok_or_else(|| {
                     AkitaError::InvalidSetup("CPU compression quotient extent overflow".into())
                 })?,
-            CompressionRelationOutput::ReducedEvaluation => 0,
+            CompressionRelationOutput::ReducedEvaluation
+            | CompressionRelationOutput::ExactCoefficientRows => 0,
         };
         self.witness
             .retained_bytes()?
@@ -72,6 +73,10 @@ impl<F: Field + 'static> PortableCompressionStateExport<F> for CpuCompressionExp
                 Some(RingRelationMode::ReducedEvaluation),
                 CompressionRelationOutput::ReducedEvaluation,
             ) => PortableCompressionState::reduced_evaluation(retained.witness.clone()),
+            (
+                Some(RingRelationMode::ExactCoefficientRows),
+                CompressionRelationOutput::ExactCoefficientRows,
+            ) => PortableCompressionState::exact_coefficient_rows(retained.witness.clone()),
             _ => Err(AkitaError::InvalidInput(
                 "CPU compression state disagrees with its bound relation mode".into(),
             )),
@@ -95,6 +100,10 @@ impl<F: Field + 'static> PortableCompressionStateExport<F> for CpuCompressionExp
                     Some(RingRelationMode::ReducedEvaluation),
                     CompressionRelationOutput::ReducedEvaluation,
                 ) => PortableCompressionState::reduced_evaluation(retained.witness),
+                (
+                    Some(RingRelationMode::ExactCoefficientRows),
+                    CompressionRelationOutput::ExactCoefficientRows,
+                ) => PortableCompressionState::exact_coefficient_rows(retained.witness),
                 _ => Err(AkitaError::InvalidInput(
                     "CPU compression state disagrees with its bound relation mode".into(),
                 )),
@@ -109,7 +118,8 @@ pub(crate) struct CpuCompressionOperation<'a, F, E>
 where
     F: Field + CanonicalEncoding,
 {
-    context: OperationCtx<'a, F, CpuBackend<F, E>>,
+    context: Option<OperationCtx<'a, F, CpuBackend<F, E>>>,
+    full_ring: Option<(&'a CpuBackend<F, E>, Vec<akita_types::FullRingMatrixRole>)>,
     owner: StateOwnerCapability<CompressionState>,
 }
 
@@ -124,7 +134,27 @@ where
         expanded: &AkitaExpandedSetup<F>,
     ) -> Result<Self, AkitaError> {
         Ok(Self {
-            context: OperationCtx::new(backend, prepared, expanded)?,
+            context: Some(OperationCtx::new(backend, prepared, expanded)?),
+            full_ring: None,
+            owner: StateOwnerCapability::new(),
+        })
+    }
+
+    pub(crate) fn for_full_ring(
+        backend: &'a CpuBackend<F, E>,
+        roles: Vec<akita_types::FullRingMatrixRole>,
+    ) -> Result<Self, AkitaError> {
+        if roles.is_empty() {
+            return Err(AkitaError::InvalidSetup(
+                "empty installed compression role chain".into(),
+            ));
+        }
+        for &role in &roles {
+            backend.full_ring_prepared(role)?;
+        }
+        Ok(Self {
+            context: None,
+            full_ring: Some((backend, roles)),
             owner: StateOwnerCapability::new(),
         })
     }
@@ -153,7 +183,8 @@ where
         let retained = self.owner.value::<CpuCompressionRetention<F>>(state)?;
         let quotient_count = match &retained.relation {
             CompressionRelationOutput::QuotientLift { quotients } => quotients.len(),
-            CompressionRelationOutput::ReducedEvaluation => 0,
+            CompressionRelationOutput::ReducedEvaluation
+            | CompressionRelationOutput::ExactCoefficientRows => 0,
         };
         Ok((retained.witness.stages().len(), quotient_count))
     }
@@ -181,16 +212,26 @@ where
                 actual: u.coeff_len(),
             });
         }
-        let (mut outputs, _) = execute_compression_chains(
-            &self.context,
-            vec![CompressionExecutionInput {
-                id: (),
-                plan: plan.clone(),
-                coefficients: u.into_coeffs(),
-                relation_mode,
-            }],
-        )?;
-        let output = outputs.pop().ok_or(AkitaError::InvalidProof)?;
+        let input = CompressionExecutionInput {
+            id: (),
+            plan: plan.clone(),
+            coefficients: u.into_coeffs(),
+            relation_mode,
+        };
+        let output = match (&self.context, &self.full_ring) {
+            (Some(context), None) => {
+                let (mut outputs, _) = execute_compression_chains(context, vec![input])?;
+                outputs.pop().ok_or(AkitaError::InvalidProof)?
+            }
+            (None, Some((backend, roles))) => {
+                crate::opaque::compression::execute_full_ring_compression(backend, roles, input)?
+            }
+            _ => {
+                return Err(AkitaError::InvalidSetup(
+                    "ambiguous compression setup family".into(),
+                ))
+            }
+        };
         let terminal_ring_dim = output
             .witness
             .plan()
@@ -278,7 +319,9 @@ mod tests {
                 .unwrap();
             assert_eq!(exported.witness().plan(), &plan);
             match mode {
-                RingRelationMode::ReducedEvaluation => assert!(exported.quotients().is_none()),
+                RingRelationMode::ReducedEvaluation | RingRelationMode::ExactCoefficientRows => {
+                    assert!(exported.quotients().is_none())
+                }
                 RingRelationMode::QuotientLift => {
                     assert_eq!(exported.quotients().unwrap().len(), plan.maps().len());
                 }

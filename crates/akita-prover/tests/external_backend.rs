@@ -492,6 +492,8 @@ pub fn prove_with_external_backend<'a, Cfg>(
     schedules: &akita_config::TrustedScheduleCatalog<Cfg>,
     opening: akita_prover::SelectedProverOpeningData<'a, Cfg::ExtField, Handle, Cfg::Field>,
     transcript_session: &[u8],
+    registry: &akita_transcript::InstalledRegistry,
+    augmentation: akita_transcript::InheritedAugmentation<'_>,
 ) -> Result<Vec<u8>, AkitaError>
 where
     Cfg: akita_config::CommitmentConfig,
@@ -519,6 +521,8 @@ where
         &backend,
         opening,
         transcript_session,
+        registry,
+        augmentation,
         BasisMode::Lagrange,
     )
 }

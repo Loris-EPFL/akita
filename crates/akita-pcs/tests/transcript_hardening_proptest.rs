@@ -60,46 +60,43 @@ fn dense_round_trip(shape_index: usize, basis_mode: BasisMode, seed: u64) {
             akita_cpu_backend::GroupContext::scheduler_without_precommitted_groups(),
         )
         .expect("commit");
-    let proof = scheme
-        .batched_prove(
-            &setup,
-            prove_input::<DenseCfg>(
-                &opening_point,
-                &openings,
-                &commitment,
-                hint,
-                scheme.schedules(),
-            ),
-            &stack,
-            b"hardening/proptest/native",
-            basis_mode,
-        )
+    let proof = { let native_setup = &setup; let native_opening = prove_input::<DenseCfg>(
+        &opening_point,
+        &openings,
+        &commitment,
+        hint,
+        scheme.schedules(),
+    ); let native_session = b"hardening/proptest/native"; let native_basis = basis_mode; akita_pcs::prepare_native_prover_context(native_setup.expanded.descriptor(), scheme.schedules(), &native_opening, native_session, &[], native_basis, 0).and_then(|native_context| scheme.batched_prove(native_setup, native_opening, &stack, native_session, native_context.registry(), native_context.augmentation(), native_basis)) }
         .expect("prove");
 
     scheme
         .verifier(verifier_setup.clone())
         .and_then(|verifier| {
-            verifier.batched_verify(
-                &proof,
-                b"hardening/proptest/native",
-                verify_input::<DenseCfg>(
-                    &opening_point,
-                    &openings,
-                    &commitment,
-                    scheme.schedules(),
-                ),
-                basis_mode,
-            )
+            { let native_statement = verify_input::<DenseCfg>(
+                &opening_point,
+                &openings,
+                &commitment,
+                scheme.schedules(),
+            ); let native_session = b"hardening/proptest/native"; let native_basis = basis_mode; akita_pcs::prepare_native_proof_context(verifier.setup().expanded().descriptor(), verifier.schedules(), &native_statement, native_session, &[], native_basis, 0).and_then(|native_context| verifier.batched_verify(&proof, native_session, native_context.registry(), native_context.augmentation(), native_statement, native_basis)) }
         })
         .expect("verify");
     let mut trailing = proof.clone();
     trailing.push(0);
+    let statement = verify_input::<DenseCfg>(
+        &opening_point, &openings, &commitment, scheme.schedules(),
+    );
+    let context = akita_pcs::prepare_native_proof_context(
+        verifier_setup.expanded().descriptor(), scheme.schedules(), &statement,
+        b"hardening/proptest/native", &[], basis_mode, 0,
+    ).expect("approved EOF fixture");
     assert!(scheme
         .verifier(verifier_setup.clone())
         .and_then(|verifier| verifier.batched_verify(
             &trailing,
             b"hardening/proptest/native",
-            verify_input::<DenseCfg>(&opening_point, &openings, &commitment, scheme.schedules(),),
+            context.registry(),
+            context.augmentation(),
+            statement,
             basis_mode
         ))
         .is_err());

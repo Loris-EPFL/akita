@@ -42,8 +42,7 @@ fn commit_prove_verify<Cfg, P>(
     )
     .expect("prover data");
     let selection = prover_data.selection();
-    let proof = scheme
-        .batched_prove(setup, prover_data, backend, label, BasisMode::Lagrange)
+    let proof = { let native_setup = setup; let native_opening = prover_data; let native_session = label; let native_basis = BasisMode::Lagrange; akita_pcs::prepare_native_prover_context(native_setup.expanded.descriptor(), scheme.schedules(), &native_opening, native_session, &[], native_basis, 0).and_then(|native_context| scheme.batched_prove(native_setup, native_opening, backend, native_session, native_context.registry(), native_context.augmentation(), native_basis)) }
         .expect("prove");
     let verify_claims = OpeningClaims::from_groups(vec![PolynomialGroupClaims::new(
         point,
@@ -60,12 +59,7 @@ fn commit_prove_verify<Cfg, P>(
                 .clone(),
         )
         .and_then(|verifier| {
-            verifier.batched_verify(
-                &proof,
-                label,
-                GroupBatchStatement::new(selection, verify_claims).expect("statement"),
-                BasisMode::Lagrange,
-            )
+            { let native_statement = GroupBatchStatement::new(selection, verify_claims).expect("statement"); let native_session = label; let native_basis = BasisMode::Lagrange; akita_pcs::prepare_native_proof_context(verifier.setup().expanded().descriptor(), verifier.schedules(), &native_statement, native_session, &[], native_basis, 0).and_then(|native_context| verifier.batched_verify(&proof, native_session, native_context.registry(), native_context.augmentation(), native_statement, native_basis)) }
         })
         .expect("verify");
 }

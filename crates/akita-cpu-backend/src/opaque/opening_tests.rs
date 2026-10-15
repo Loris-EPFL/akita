@@ -1,3 +1,7 @@
+//! CPU EOR fixtures install their complete finite grammar from the trusted
+//! opening layout and grinding plan before execution. Dense MLE/partial oracles
+//! and shared-commitment scope checks remain independent of transcript setup.
+
 use crate::opaque::CpuBackend as GenericCpuBackend;
 use crate::opaque::RecursiveWitnessFlat;
 use akita_config::proof_optimized::fp128::OneHot;
@@ -5,7 +9,11 @@ use akita_error::AkitaError;
 use akita_params::*;
 use akita_prover::backend::*;
 use akita_sumcheck::SumcheckKernel;
-use akita_transcript::{new_prover_channel, new_verifier_channel};
+use akita_transcript::{
+    new_prover_channel, new_verifier_channel, CompletedResultKind, IndexedOperation,
+    IndexedRequest, InstalledContext, InstalledEvent, InstalledRegistry, ProtocolMessageKind,
+    ProtocolSiteId, RequestSpec, SITE_FAMILY_EXTENSION_OPENING_REDUCTION,
+};
 use akita_types::*;
 use jolt_field::{Ext2, ExtField, Field, One, Prime128OffsetA7F7, Ring, Zero};
 use jolt_poly::UnivariatePoly;
@@ -198,6 +206,134 @@ fn eor_test_plan(rounds: usize, batches_claims: bool) -> akita_params::GrindingP
     akita_params::GrindingPlan::new(runs, challenge_order).unwrap()
 }
 
+// This is the EOR-only slice of the approved native compiler, not a full PCS
+// row: the fixture deliberately retains its generic Ext2<F> arithmetic. Typed
+// field_request_spec requests preserve that extension's vector codec instead of
+// imposing the selected A7F7/E1 scalar law.
+fn eor_test_context(
+    domain: &[u8],
+    layout: &OpeningClaimsLayout,
+    plan: &GrindingPlan,
+) -> InstalledContext {
+    fn challenge(
+        events: &mut Vec<InstalledEvent>,
+        ordinal: &mut u64,
+        run: &GrindingRun,
+        expected: GrindingSite,
+        count: usize,
+    ) {
+        assert_eq!(run.site(), expected);
+        assert_eq!(run.multiplicity(), 1);
+        if run.grind_bits() > 0 {
+            let (nonce, _) = grinding_records(expected, run.grind_bits(), run.nonce_bits());
+            events.push(InstalledEvent::Message(nonce));
+            let detail = u32::from(run.grind_bits()) | (u32::from(run.nonce_bits()) << 8);
+            events.push(InstalledEvent::Request(RequestSpec {
+                request: IndexedRequest::new(
+                    IndexedOperation::Predicate32,
+                    *ordinal,
+                    expected.site_id(detail),
+                    akita_transcript::predicate_descriptor(run.grind_bits(), run.nonce_bits())
+                        .unwrap()
+                        .to_vec(),
+                    32,
+                )
+                .unwrap(),
+                result_kind: CompletedResultKind::Predicate32,
+                result_len: 32,
+            }));
+            *ordinal += 1;
+        } else {
+            assert_eq!(run.nonce_bits(), 0);
+        }
+        for group in 0..count {
+            let mut site = expected.site_id(0);
+            site.group = u32::try_from(group).unwrap();
+            events.push(InstalledEvent::Request(
+                akita_transcript::field_request_spec::<F, E>(*ordinal, site).unwrap(),
+            ));
+            *ordinal += 1;
+        }
+    }
+
+    let shape =
+        canonical_extension_opening_reduction_shape(layout, <E as ExtField<F>>::DEGREE).unwrap();
+    let (split_bits, _) = tensor_opening_split::<F, E>().unwrap();
+    let level = 1;
+    let eor_site = |stage| ProtocolSiteId {
+        family: SITE_FAMILY_EXTENSION_OPENING_REDUCTION,
+        level,
+        stage,
+        ..ProtocolSiteId::default()
+    };
+    let message = |site, kind, count| {
+        InstalledEvent::Message(
+            akita_transcript::extension_group_record::<F, E>(site, kind, count).unwrap(),
+        )
+    };
+    let claims = layout.num_total_polynomials();
+    let mut events = vec![
+        message(eor_site(1), ProtocolMessageKind::PublicValue, claims),
+        message(eor_site(2), ProtocolMessageKind::ProofAtoms, shape.partials),
+    ];
+    let mut runs = plan.runs().iter();
+    let mut ordinal = 0;
+    challenge(
+        &mut events,
+        &mut ordinal,
+        runs.next().unwrap(),
+        GrindingSite::ExtensionOpeningPoint { level },
+        split_bits,
+    );
+    if layout.requires_row_batch_challenge() {
+        challenge(
+            &mut events,
+            &mut ordinal,
+            runs.next().unwrap(),
+            GrindingSite::ExtensionOpeningClaimBatch { level },
+            claims,
+        );
+    }
+    let protocol = SumcheckProtocol::ExtensionOpeningReduction;
+    let sumcheck_site = |round, role| {
+        grinding_sumcheck_site(protocol, level, 0, EOR_SUMCHECK_INVOCATION, round, role)
+    };
+    events.push(message(
+        sumcheck_site(0, SumcheckRole::Claim),
+        ProtocolMessageKind::PublicValue,
+        1,
+    ));
+    for (round, &degree) in shape.sumcheck.iter().enumerate() {
+        let round = u32::try_from(round).unwrap();
+        events.push(message(
+            sumcheck_site(round, SumcheckRole::RoundBody),
+            ProtocolMessageKind::ProofAtoms,
+            degree,
+        ));
+        challenge(
+            &mut events,
+            &mut ordinal,
+            runs.next().unwrap(),
+            GrindingSite::SumcheckRound { protocol, level, stage: 0, round },
+            1,
+        );
+    }
+    events.push(message(
+        eor_site(3),
+        ProtocolMessageKind::ProofAtoms,
+        shape.final_claims,
+    ));
+    assert!(runs.next().is_none());
+    let resources = akita_config::NativeRegistryResources::from_trusted_bounds(
+        &events,
+        u64::try_from(domain.len()).unwrap(),
+        4,
+    )
+    .unwrap();
+    let registry = InstalledRegistry::new(0x454f_52, events, resources.limits).unwrap();
+    InstalledContext::new(&registry, domain, b"test").unwrap()
+}
+
 fn direct_eq_at_boolean<E: Field>(point: &[E], index: usize) -> E {
     point
         .iter()
@@ -297,8 +433,9 @@ fn recursive_extension_opening_reduction_pads_and_shares_challenges() {
             ring_dimension: 64,
         },
     ];
-    let channel = new_prover_channel(b"test/aggregate-padding", b"test").unwrap();
     let plan = eor_test_plan(7, true);
+    let native_context = eor_test_context(b"test/aggregate-padding", &layout, &plan);
+    let channel = new_prover_channel(&native_context).unwrap();
     let mut grinding = ProverGrinding::new(channel, &plan);
     let proved = prove_eor(
         &backend,
@@ -445,8 +582,10 @@ fn mixed_setup_prefix_and_suffix_eor_matches_independent_dense_oracle() {
                     ring_dimension: D,
                 },
             ];
-            let channel = new_prover_channel(b"test/mixed-eor-dense-oracle", b"test").unwrap();
             let plan = eor_test_plan(8, true);
+            let native_context =
+                eor_test_context(b"test/mixed-eor-dense-oracle", &layout, &plan);
+            let channel = new_prover_channel(&native_context).unwrap();
             let mut grinding = ProverGrinding::new(channel, &plan);
             let proved = prove_eor(
                 &backend,
@@ -472,9 +611,7 @@ fn mixed_setup_prefix_and_suffix_eor_matches_independent_dense_oracle() {
                 .flat_map(|(evals, point)| direct_column_partials::<F, E>(evals, point))
                 .collect::<Vec<_>>();
             assert_eq!(proved.partials, partials);
-            let channel =
-                new_verifier_channel(b"test/mixed-eor-dense-oracle", b"test", &proof_bytes)
-                    .unwrap();
+            let channel = new_verifier_channel(&native_context, &proof_bytes).unwrap();
             let mut replay = VerifierGrinding::new(channel, &plan);
             let eor_prefix = eor_prefix::<F, E, _>(
                 &mut replay,
@@ -553,9 +690,13 @@ fn mixed_setup_prefix_and_suffix_eor_matches_independent_dense_oracle() {
                     point: &long_point,
                     ring_dimension: D,
                 }];
-                let channel =
-                    new_prover_channel(b"test/shared-commitment-scopes", b"test").unwrap();
                 let plan = eor_test_plan(8, false);
+                let native_context = eor_test_context(
+                    b"test/shared-commitment-scopes",
+                    &shared_layout,
+                    &plan,
+                );
+                let channel = new_prover_channel(&native_context).unwrap();
                 let mut grinding = ProverGrinding::new(channel, &plan);
                 let proved = prove_eor(
                     &backend,
@@ -604,10 +745,9 @@ fn proof_schedule_from_layout_includes_entire_batch() {
         .profiles()
         .final_group;
     let schedule = catalog
-        .resolve_key(&ScheduleLookupKey {
-            final_group: PolynomialGroupLayout::new(32, 2),
-            precommitteds: vec![precommitted, precommitted],
-        })
+        .resolve_key(&ScheduleLookupKey::decoded(
+            PolynomialGroupLayout::new(32, 2), vec![precommitted, precommitted],
+        ))
         .expect("multi-group schedule")
         .schedule()
         .clone();
@@ -679,7 +819,10 @@ fn aggregate_eor_rejects_wrong_owner_and_invalid_round_progression() {
         point: &point,
         ring_dimension: 64,
     }];
-    let other = CpuBackend::new(backend.prepared().unwrap().expanded.clone()).unwrap();
+    let other = CpuBackend::new(std::sync::Arc::new(
+        backend.prepared().unwrap().expanded().unwrap().clone(),
+    ))
+    .unwrap();
     assert!(<CpuBackend as OpaqueEorKernel<F, E>>::prepare_eor(
         &other,
         &proof.session,

@@ -348,7 +348,7 @@ fn trusted_artifact_round_trip_preserves_rows_and_selection() {
     ));
     assert!(std::ptr::eq(
         loaded_row,
-        loaded.resolve_profiles(loaded_row.profiles()).unwrap()
+        loaded.resolve_profiles(loaded_row.profiles(), loaded_row.opening_layout().unwrap().views()).unwrap()
     ));
     assert_eq!(loaded_row.schedule(), checked_in_row.schedule());
     assert!(loaded_row

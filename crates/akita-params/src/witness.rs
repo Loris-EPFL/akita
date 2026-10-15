@@ -118,6 +118,8 @@ pub enum RelationQuotientLayout {
     /// Ring equalities are checked after negacyclic reduction, so no quotient
     /// row is part of the committed witness.
     ReducedEvaluation,
+    /// Exact native coefficient rows; no quotient polynomial is introduced.
+    ExactCoefficientRows,
 }
 
 /// One padded negative-binary digit span in the global witness tail.
@@ -744,7 +746,8 @@ impl WitnessLayout {
     pub fn r_rows(&self) -> &[WitnessQuotientRowLayout] {
         match &self.relation_quotients {
             RelationQuotientLayout::QuotientLift { rows, .. } => rows,
-            RelationQuotientLayout::ReducedEvaluation => &[],
+            RelationQuotientLayout::ReducedEvaluation
+            | RelationQuotientLayout::ExactCoefficientRows => &[],
         }
     }
 
@@ -759,7 +762,8 @@ impl WitnessLayout {
             RelationQuotientLayout::QuotientLift { quotient_depth, .. } => {
                 Some(quotient_depth.get())
             }
-            RelationQuotientLayout::ReducedEvaluation => None,
+            RelationQuotientLayout::ReducedEvaluation
+            | RelationQuotientLayout::ExactCoefficientRows => None,
         }
     }
 

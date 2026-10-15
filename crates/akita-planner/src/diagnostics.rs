@@ -12,14 +12,15 @@ use crate::{
     SelectionPolicyId,
 };
 
-const RELATION_PHASE_COUNT: usize = 2;
-const RELATION_MODE_COUNT: usize = 2;
+const RELATION_PHASE_COUNT: usize = 3;
+const RELATION_MODE_COUNT: usize = 3;
 const REDUCED_REJECTION_COUNT: usize = 4;
 
 const fn relation_phase_index(phase: RingRelationPhase) -> usize {
     match phase {
         RingRelationPhase::QuotientPrefix => 0,
         RingRelationPhase::ReducedEvaluationSuffix => 1,
+        RingRelationPhase::ExactCoefficientRows => 2,
     }
 }
 
@@ -27,6 +28,7 @@ const fn relation_mode_index(mode: RingRelationMode) -> usize {
     match mode {
         RingRelationMode::QuotientLift => 0,
         RingRelationMode::ReducedEvaluation => 1,
+        RingRelationMode::ExactCoefficientRows => 2,
     }
 }
 
@@ -165,6 +167,7 @@ impl fmt::Display for PlannerDiagnosticsSnapshot {
                 formatter.write_str(match fold.relation_mode {
                     RingRelationMode::QuotientLift => "quotient",
                     RingRelationMode::ReducedEvaluation => "reduced-evaluation",
+                    RingRelationMode::ExactCoefficientRows => "exact-coefficient-rows",
                 })?;
             }
             formatter.write_str("]}")?;
@@ -414,9 +417,9 @@ mod tests {
         let snapshot = snapshot.expect("enabled capture must return diagnostics");
         assert_eq!(snapshot.suffix_calls, 1);
         assert_eq!(snapshot.memo_hits, 1);
-        assert_eq!(snapshot.suffix_calls_by_relation_phase, [1, 0]);
-        assert_eq!(snapshot.memo_hits_by_relation_phase, [1, 0]);
-        assert_eq!(snapshot.relation_transitions, [1, 1]);
+        assert_eq!(snapshot.suffix_calls_by_relation_phase, [1, 0, 0]);
+        assert_eq!(snapshot.memo_hits_by_relation_phase, [1, 0, 0]);
+        assert_eq!(snapshot.relation_transitions, [1, 1, 0]);
         assert_eq!(snapshot.reduced_transition_rejections, [0, 0, 1, 0]);
         assert_eq!(snapshot.peak_memo_entries, 9);
         assert_eq!(snapshot.peak_direct_memo_entries, 7);

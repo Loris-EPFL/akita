@@ -79,7 +79,7 @@ pub struct ValidatedCoefficientPackingGroup<'authority, 'output, F: Field, E: Fi
     challenge_alpha_values: Vec<E>,
     quotient_gadget: Vec<E>,
     denominator: E,
-    witness_gadget: Vec<E>,
+    source_opening_weights: Vec<E>,
     fold_gadget: Vec<E>,
 }
 
@@ -187,9 +187,10 @@ impl<'authority, 'output, F: Field, E: Field>
         &self.quotient_gadget
     }
 
+    /// Public query digit weights, distinct from every source/response gadget.
     #[must_use]
-    pub fn witness_gadget(&self) -> &[E] {
-        &self.witness_gadget
+    pub fn source_opening_weights(&self) -> &[E] {
+        &self.source_opening_weights
     }
 
     #[must_use]
@@ -362,7 +363,7 @@ where
         OpeningMethod::SubringCoefficientPacking {
             challenge_subring_dimension,
         } => challenge_subring_dimension,
-        OpeningMethod::EvaluationTrace => {
+        OpeningMethod::EvaluationTrace | OpeningMethod::FullRingScalarExtension { .. } => {
             return Err(AkitaError::InvalidSetup(
                 "coefficient-packing semantics require the packing method".into(),
             ));
@@ -392,6 +393,9 @@ where
         || opening_geometry.polynomial_modulus_dimension() != geometry.challenge_subring_dimension()
         || opening_geometry.coordinate_plane_count() != geometry.extension_degree()
         || inputs.prepared_point.source_num_vars() != group_layout.num_vars()
+        || inputs.prepared_point.source_view() != inputs.opening_batch.group_view(inputs.group_index)?
+        || inputs.prepared_point.source_view() != group_params.opening.source_view
+        || inputs.prepared_point.point_num_vars() != inputs.opening_batch.group_point_num_vars(inputs.group_index)?
         || inputs.prepared_point.num_live_positions()
             != group_params.num_live_ring_elements_per_claim()
         || inputs.prepared_point.num_positions_per_block() != group_params.num_positions_per_block()
@@ -403,6 +407,12 @@ where
         return Err(AkitaError::InvalidSetup(
             "coefficient-packing group geometry, point, or claims disagree".into(),
         ));
+    }
+    group_params.opening.validate_source_view(&group_params.profile, E::DEGREE)?;
+    if inputs.prepared_point.source_view() == akita_params::SourceOpeningView::OriginalRamPlanesV1
+        && inputs.prepared_point.basis() != akita_params::BasisMode::Lagrange
+    {
+        return Err(AkitaError::InvalidSetup("raw packing requires Lagrange semantics".into()));
     }
 
     let row_families = &authority.row_families;
@@ -503,13 +513,12 @@ where
         .ok_or(AkitaError::InvalidProof)?
         * inputs.alpha
         + E::one();
-    let witness_gadget = gadget_row_scalars::<F>(
-        group_params.num_digits_inner(),
-        group_params.log_basis_inner(),
-    )
-    .into_iter()
-    .map(E::lift_base)
-    .collect::<Vec<_>>();
+    let source_opening_weights = match inputs.prepared_point.source_digit_weights() {
+        Some(weights) => weights.to_vec(),
+        None => gadget_row_scalars::<F>(
+            group_params.num_digits_inner(), group_params.log_basis_inner(),
+        ).into_iter().map(E::lift_base).collect(),
+    };
     let fold_gadget = gadget_row_scalars::<F>(
         group_params.num_digits_fold(),
         group_params.log_basis_open(),
@@ -536,7 +545,7 @@ where
         challenge_alpha_values,
         quotient_gadget,
         denominator,
-        witness_gadget,
+        source_opening_weights,
         fold_gadget,
     })
 }
@@ -706,7 +715,7 @@ where
         alpha_powers,
         basis,
         opening_gadget,
-        witness_gadget,
+        source_opening_weights,
         fold_gadget,
         ..
     } = validated;
@@ -743,7 +752,7 @@ where
         alpha_powers,
         basis,
         opening_gadget,
-        witness_gadget,
+        source_opening_weights,
         fold_gadget,
     })
 }
@@ -833,6 +842,11 @@ where
                     },
                     &authority,
                 )?)?);
+            }
+            OpeningMethod::FullRingScalarExtension { .. } => {
+                return Err(AkitaError::InvalidSetup(
+                    "full-ring openings require the exact coefficient relation".into(),
+                ));
             }
         }
     }

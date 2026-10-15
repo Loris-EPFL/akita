@@ -358,18 +358,13 @@ fn fp128_onehot_batched() {
         let prover_data =
             prove_input::<OneHotCfg>(&pt[..], &openings, &commitment, hint, scheme.schedules());
         let proof = prove_matching_byte_model(scheme.schedules(), prover_data.selection(), || {
-            scheme.batched_prove(&setup, prover_data, &stack, session, BasisMode::Lagrange)
+            { let native_setup = &setup; let native_opening = prover_data; let native_session = session; let native_basis = BasisMode::Lagrange; akita_pcs::prepare_native_prover_context(native_setup.expanded.descriptor(), scheme.schedules(), &native_opening, native_session, &[], native_basis, 0).and_then(|native_context| scheme.batched_prove(native_setup, native_opening, &stack, native_session, native_context.registry(), native_context.augmentation(), native_basis)) }
         });
 
         scheme
             .verifier(verifier_setup.clone())
             .and_then(|verifier| {
-                verifier.batched_verify(
-                    &proof,
-                    session,
-                    verify_input::<OneHotCfg>(&pt[..], &openings, &commitment, scheme.schedules()),
-                    BasisMode::Lagrange,
-                )
+                { let native_statement = verify_input::<OneHotCfg>(&pt[..], &openings, &commitment, scheme.schedules()); let native_session = session; let native_basis = BasisMode::Lagrange; akita_pcs::prepare_native_proof_context(verifier.setup().expanded().descriptor(), verifier.schedules(), &native_statement, native_session, &[], native_basis, 0).and_then(|native_context| verifier.batched_verify(&proof, native_session, native_context.registry(), native_context.augmentation(), native_statement, native_basis)) }
             })
             .unwrap_or_else(|e| panic!("onehot nv={nv} batch={batch_size}: {e:?}"));
     }
@@ -419,18 +414,13 @@ fn fp128_dense_batched() {
         let prover_data =
             prove_input::<DenseCfg>(&pt[..], &openings, &commitment, hint, scheme.schedules());
         let proof = prove_matching_byte_model(scheme.schedules(), prover_data.selection(), || {
-            scheme.batched_prove(&setup, prover_data, &stack, session, BasisMode::Lagrange)
+            { let native_setup = &setup; let native_opening = prover_data; let native_session = session; let native_basis = BasisMode::Lagrange; akita_pcs::prepare_native_prover_context(native_setup.expanded.descriptor(), scheme.schedules(), &native_opening, native_session, &[], native_basis, 0).and_then(|native_context| scheme.batched_prove(native_setup, native_opening, &stack, native_session, native_context.registry(), native_context.augmentation(), native_basis)) }
         });
 
         scheme
             .verifier(verifier_setup.clone())
             .and_then(|verifier| {
-                verifier.batched_verify(
-                    &proof,
-                    session,
-                    verify_input::<DenseCfg>(&pt[..], &openings, &commitment, scheme.schedules()),
-                    BasisMode::Lagrange,
-                )
+                { let native_statement = verify_input::<DenseCfg>(&pt[..], &openings, &commitment, scheme.schedules()); let native_session = session; let native_basis = BasisMode::Lagrange; akita_pcs::prepare_native_proof_context(verifier.setup().expanded().descriptor(), verifier.schedules(), &native_statement, native_session, &[], native_basis, 0).and_then(|native_context| verifier.batched_verify(&proof, native_session, native_context.registry(), native_context.augmentation(), native_statement, native_basis)) }
             })
             .unwrap_or_else(|e| panic!("dense nv={nv} batch={batch_size}: {e:?}"));
     }
@@ -498,37 +488,25 @@ fn fp128_onehot_oversized_setup() {
             .expect("commit");
 
         let session = b"completeness/fp128_onehot_oversized_setup";
-        let proof = scheme
-            .batched_prove(
-                &setup,
-                prove_input::<OneHotCfg>(
-                    &pt[..],
-                    &[expected_opening],
-                    &commitment,
-                    hint,
-                    scheme.schedules(),
-                ),
-                &stack,
-                session,
-                BasisMode::Lagrange,
-            )
+        let proof = { let native_setup = &setup; let native_opening = prove_input::<OneHotCfg>(
+            &pt[..],
+            &[expected_opening],
+            &commitment,
+            hint,
+            scheme.schedules(),
+        ); let native_session = session; let native_basis = BasisMode::Lagrange; akita_pcs::prepare_native_prover_context(native_setup.expanded.descriptor(), scheme.schedules(), &native_opening, native_session, &[], native_basis, 0).and_then(|native_context| scheme.batched_prove(native_setup, native_opening, &stack, native_session, native_context.registry(), native_context.augmentation(), native_basis)) }
             .expect("prove");
 
         let openings = [expected_opening];
         scheme
             .verifier(verifier_setup.clone())
             .and_then(|verifier| {
-                verifier.batched_verify(
-                    &proof,
-                    session,
-                    verify_input::<OneHotCfg>(
-                        &pt[..],
-                        &openings[..],
-                        &commitment,
-                        scheme.schedules(),
-                    ),
-                    BasisMode::Lagrange,
-                )
+                { let native_statement = verify_input::<OneHotCfg>(
+                    &pt[..],
+                    &openings[..],
+                    &commitment,
+                    scheme.schedules(),
+                ); let native_session = session; let native_basis = BasisMode::Lagrange; akita_pcs::prepare_native_proof_context(verifier.setup().expanded().descriptor(), verifier.schedules(), &native_statement, native_session, &[], native_basis, 0).and_then(|native_context| verifier.batched_verify(&proof, native_session, native_context.registry(), native_context.augmentation(), native_statement, native_basis)) }
             })
             .unwrap_or_else(|e| {
                 panic!("oversized setup (setup_nv={setup_nv}, poly_nv={poly_nv}): {e:?}")
@@ -570,37 +548,25 @@ fn fp128_dense_monomial_basis() {
             .expect("commit");
 
         let session = b"completeness/fp128_dense_monomial_basis";
-        let proof = scheme
-            .batched_prove(
-                &setup,
-                prove_input::<DenseCfg>(
-                    &pt[..],
-                    &[expected_opening],
-                    &commitment,
-                    hint,
-                    scheme.schedules(),
-                ),
-                &stack,
-                session,
-                BasisMode::Monomial,
-            )
+        let proof = { let native_setup = &setup; let native_opening = prove_input::<DenseCfg>(
+            &pt[..],
+            &[expected_opening],
+            &commitment,
+            hint,
+            scheme.schedules(),
+        ); let native_session = session; let native_basis = BasisMode::Monomial; akita_pcs::prepare_native_prover_context(native_setup.expanded.descriptor(), scheme.schedules(), &native_opening, native_session, &[], native_basis, 0).and_then(|native_context| scheme.batched_prove(native_setup, native_opening, &stack, native_session, native_context.registry(), native_context.augmentation(), native_basis)) }
             .expect("monomial prove");
 
         let openings = [expected_opening];
         scheme
             .verifier(verifier_setup.clone())
             .and_then(|verifier| {
-                verifier.batched_verify(
-                    &proof,
-                    session,
-                    verify_input::<DenseCfg>(
-                        &pt[..],
-                        &openings[..],
-                        &commitment,
-                        scheme.schedules(),
-                    ),
-                    BasisMode::Monomial,
-                )
+                { let native_statement = verify_input::<DenseCfg>(
+                    &pt[..],
+                    &openings[..],
+                    &commitment,
+                    scheme.schedules(),
+                ); let native_session = session; let native_basis = BasisMode::Monomial; akita_pcs::prepare_native_proof_context(verifier.setup().expanded().descriptor(), verifier.schedules(), &native_statement, native_session, &[], native_basis, 0).and_then(|native_context| verifier.batched_verify(&proof, native_session, native_context.registry(), native_context.augmentation(), native_statement, native_basis)) }
             })
             .expect("monomial verify");
     });

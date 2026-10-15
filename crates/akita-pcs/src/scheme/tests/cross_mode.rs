@@ -112,15 +112,8 @@ fn proofs_cannot_replay_across_valid_quotient_and_reduced_schedules() {
                         .expect("cross-mode prover group");
                 let claims =
                     OpeningClaims::from_groups(vec![group]).expect("cross-mode prover claims");
-                scheme
-                    .batched_prove(
-                        &setup,
-                        selected_prover_data(scheme, claims, vec![handle])
-                            .expect("cross-mode prover data"),
-                        backend,
-                        LABEL,
-                        BasisMode::Lagrange,
-                    )
+                { let native_setup = &setup; let native_opening = selected_prover_data(scheme, claims, vec![handle])
+                    .expect("cross-mode prover data"); let native_session = LABEL; let native_basis = BasisMode::Lagrange; crate::prepare_native_prover_context(native_setup.expanded.descriptor(), scheme.schedules(), &native_opening, native_session, &[], native_basis, 0).and_then(|native_context| scheme.batched_prove(native_setup, native_opening, backend, native_session, native_context.registry(), native_context.augmentation(), native_basis)) }
                     .expect("cross-mode proof")
             };
             let quotient_proof = prove(&quotient_scheme, &stack, hint.clone());
@@ -145,12 +138,7 @@ fn proofs_cannot_replay_across_valid_quotient_and_reduced_schedules() {
                 scheme
                     .verifier(verifier_setup.clone())
                     .and_then(|verifier| {
-                        verifier.batched_verify(
-                            proof,
-                            LABEL,
-                            statement(selection, &point, opening, &commitment),
-                            BasisMode::Lagrange,
-                        )
+                        { let native_statement = statement(selection, &point, opening, &commitment); let native_session = LABEL; let native_basis = BasisMode::Lagrange; crate::prepare_native_proof_context(verifier.setup().expanded().descriptor(), verifier.schedules(), &native_statement, native_session, &[], native_basis, 0).and_then(|native_context| verifier.batched_verify(proof, native_session, native_context.registry(), native_context.augmentation(), native_statement, native_basis)) }
                     })
                     .unwrap_or_else(|error| panic!("honest {name} proof must verify: {error:?}"));
             }
@@ -173,12 +161,7 @@ fn proofs_cannot_replay_across_valid_quotient_and_reduced_schedules() {
                     scheme
                         .verifier(verifier_setup.clone())
                         .and_then(|verifier| {
-                            verifier.batched_verify(
-                                proof,
-                                LABEL,
-                                statement(wrong_selection, &point, opening, &commitment),
-                                BasisMode::Lagrange,
-                            )
+                            { let native_statement = statement(wrong_selection, &point, opening, &commitment); let native_session = LABEL; let native_basis = BasisMode::Lagrange; crate::prepare_native_proof_context(verifier.setup().expanded().descriptor(), verifier.schedules(), &native_statement, native_session, &[], native_basis, 0).and_then(|native_context| verifier.batched_verify(proof, native_session, native_context.registry(), native_context.augmentation(), native_statement, native_basis)) }
                         })
                 }));
                 assert!(

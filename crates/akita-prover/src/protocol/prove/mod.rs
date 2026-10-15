@@ -38,6 +38,8 @@ pub(crate) struct ExtensionOpeningReduction<E: Field> {
 
 mod fold;
 mod fold_kernels;
+pub(crate) mod full_ring_root;
+pub(crate) mod full_ring_strong;
 mod opening_reduction;
 mod root;
 mod suffix;
@@ -45,7 +47,7 @@ mod suffix;
 pub(in crate::protocol::prove) use fold::{prepare_fold, prove_fold, PreparedFold};
 pub(in crate::protocol) use fold_kernels::*;
 pub(crate) use opening_reduction::*;
-pub use root::batched_prove;
+pub use root::{batched_prove, begin_batched_reduction, PendingNativeProver};
 pub use suffix::SuffixProverState;
 
 /// Output from a single prove level, used to extend proof wire data and state.

@@ -60,7 +60,7 @@ struct CountingResources<'a> {
 }
 
 impl CommitmentResourceControl<F> for CountingResources<'_> {
-    fn setup_descriptor(&self) -> &akita_types::AkitaSetupDescriptor {
+    fn setup_descriptor(&self) -> &akita_types::AkitaSetupIdentity {
         self.inner.setup_descriptor()
     }
 

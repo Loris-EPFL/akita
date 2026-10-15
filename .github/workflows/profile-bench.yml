@@ -1,3 +1,6 @@
+# Rust jobs build sibling akita/ and jolt/ checkouts. Keep the event revision
+# for this repository so PR gates test the proposed changes; the companion is
+# pinned to the supported akita-query-relation-accumulation-v8 branch.
 name: Akita Profile Benchmarks
 
 on:
@@ -99,11 +102,23 @@ jobs:
               onehot_fp128_multi_chunk_w2r2:32:1
               onehot_fp128_multi_chunk_w4r2:32:1
               onehot_fp128_multi_chunk_w8r2:32:1
+    defaults:
+      run:
+        working-directory: akita
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          path: akita
           fetch-depth: 0
 
+      - name: Checkout paired jolt
+        id: paired-jolt
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: Loris-EPFL/jolt
+          ref: akita-query-relation-accumulation-v8
+          path: jolt
+          persist-credentials: false
       - name: Initialize benchmark paths
         run: |
           group_dir="$RUNNER_TEMP/bench/${{ matrix.group.name }}"
@@ -141,7 +156,7 @@ jobs:
               mergeBaseSha = execFileSync(
                 'git',
                 ['merge-base', pullRequest.base.sha, pullRequest.head.sha],
-                { encoding: 'utf8' }
+                { encoding: 'utf8', cwd: `${process.env.GITHUB_WORKSPACE}/akita` }
               ).trim();
             } catch (error) {
               core.warning(`Could not determine benchmark merge base: ${error.message}`);
@@ -178,6 +193,7 @@ jobs:
       # hosted-runner budget.
       - uses: actions-rust-lang/setup-rust-toolchain@ecabd13d1c56bd1345c230e542e9144811ad706f # v2.0.0
         with:
+          rust-src-dir: akita
           rustflags: -D warnings -C target-cpu=x86-64-v3
           cache: false
           components: rustfmt
@@ -193,17 +209,27 @@ jobs:
       - name: Verify profile benchmark feature coverage
         run: ./scripts/check_profile_ci_features.sh
 
+      - name: Checkout paired Jolt for merge-base build
+        if: github.event_name == 'pull_request' && env.AKITA_BENCH_BASELINE_MODES_OK == '1'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: Loris-EPFL/jolt
+          ref: ${{ steps.paired-jolt.outputs.commit }}
+          path: bench-base/jolt
+          persist-credentials: false
+
       - name: Build merge-base profile binary
         if: github.event_name == 'pull_request' && env.AKITA_BENCH_BASELINE_MODES_OK == '1'
         env:
           AKITA_BENCH_PROFILE_FEATURE: ${{ matrix.group.profile_feature }}
         run: |
-          git worktree add "$RUNNER_TEMP/bench-base" "$AKITA_BENCH_MERGE_BASE_SHA"
+          mkdir -p "$GITHUB_WORKSPACE/bench-base"
+          git worktree add "$GITHUB_WORKSPACE/bench-base/akita" "$AKITA_BENCH_MERGE_BASE_SHA"
           mkdir -p "$RUNNER_TEMP/bench-bins"
           features="parallel,$AKITA_BENCH_PROFILE_FEATURE"
           fallback_features="parallel,profile-ci"
           (
-            cd "$RUNNER_TEMP/bench-base" &&
+            cd "$GITHUB_WORKSPACE/bench-base/akita" &&
             if python3 scripts/cargo_feature_exists.py akita-pcs transcript-blake2b; then
               features="$features,transcript-blake2b"
               fallback_features="$fallback_features,transcript-blake2b"

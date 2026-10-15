@@ -293,7 +293,6 @@ impl FoldWitnessNorms {
     }
 
     /// Witness L1 norm `||s||_1 = nonzeros · ||s||_inf`.
-    #[cfg(test)]
     #[inline]
     #[must_use]
     pub fn l1_norm(&self) -> u128 {

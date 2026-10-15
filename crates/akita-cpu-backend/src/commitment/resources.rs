@@ -6,7 +6,7 @@ use crate::opaque::{
     CompressionComputeBackend, NttCacheOwnerId, NttOperationCluster, RoutedNttRequirement,
 };
 use akita_error::{checked, AkitaError};
-use akita_types::{AkitaSetupDescriptor, NttCacheKey, NttTransformDomain};
+use akita_types::{AkitaSetupIdentity, NttCacheKey, NttTransformDomain};
 use jolt_field::{CanonicalEncoding, Field};
 use std::marker::PhantomData;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -214,7 +214,7 @@ where
     F: Field + CanonicalEncoding,
 {
     /// Setup descriptor from which the captured prepared state was built.
-    fn setup_descriptor(&self) -> &AkitaSetupDescriptor;
+    fn setup_descriptor(&self) -> &AkitaSetupIdentity;
 
     /// Ensure one exact NTT cache slot.
     fn ensure_ntt_slot(&self, requirement: CommitmentNttRequirement) -> Result<(), AkitaError>;
@@ -241,7 +241,7 @@ where
 {
     backend: &'a B,
     prepared: &'a B::PreparedSetup,
-    setup: AkitaSetupDescriptor,
+    setup: AkitaSetupIdentity,
     marker: PhantomData<fn() -> F>,
 }
 
@@ -260,7 +260,27 @@ where
         Ok(Self {
             backend,
             prepared,
-            setup: setup.descriptor().clone(),
+            setup: setup.descriptor().clone().into(),
+            marker: PhantomData,
+        })
+    }
+}
+
+impl<'a, F, E> PreparedCommitmentResources<'a, F, crate::opaque::CpuBackend<F, E>>
+where
+    F: Field + CanonicalEncoding,
+{
+    pub(crate) fn for_full_ring(
+        backend: &'a crate::opaque::CpuBackend<F, E>,
+        prepared: &'a crate::opaque::CpuPreparedSetup<F>,
+    ) -> Result<Self, AkitaError> {
+        crate::opaque::OperationCtx::for_full_ring(backend, prepared)?;
+        Ok(Self {
+            backend,
+            prepared,
+            setup: akita_types::AkitaSetupIdentity::FullRing(
+                backend.full_ring_setup()?.descriptor().clone(),
+            ),
             marker: PhantomData,
         })
     }
@@ -271,7 +291,7 @@ where
     F: Field + CanonicalEncoding,
     B: CompressionComputeBackend<F>,
 {
-    fn setup_descriptor(&self) -> &AkitaSetupDescriptor {
+    fn setup_descriptor(&self) -> &AkitaSetupIdentity {
         &self.setup
     }
 
@@ -314,7 +334,7 @@ pub(crate) struct CommitmentOperationContext<'a, F>
 where
     F: Field + CanonicalEncoding,
 {
-    pub(crate) setup: AkitaSetupDescriptor,
+    pub(crate) setup: AkitaSetupIdentity,
     pub(crate) backend_instance: BackendInstanceId,
     pub(crate) name: &'static str,
     pub(crate) resources: StageResources<'a, F>,
@@ -347,7 +367,7 @@ where
         Self::Controlled(Arc::new(control))
     }
 
-    pub(crate) fn validate_setup(&self, setup: &AkitaSetupDescriptor) -> Result<(), AkitaError> {
+    pub(crate) fn validate_setup(&self, setup: &AkitaSetupIdentity) -> Result<(), AkitaError> {
         if let Self::Controlled(control) = self {
             if control.setup_descriptor() != setup {
                 return Err(AkitaError::InvalidSetup(

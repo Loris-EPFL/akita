@@ -35,3 +35,32 @@ pub trait ProofAdmission<F: Field + CanonicalEncoding, E: Field>:
         commitment: &Commitment<F>,
     ) -> Result<Self::CommitmentMaterialHandle, AkitaError>;
 }
+
+/// Admission for actual provisioned full-ring matrix roles. A seed-based
+/// shared-prefix descriptor cannot be passed as a selected installation.
+pub trait FullRingProofAdmission<F: Field + CanonicalEncoding, E: Field>:
+    ProofAdmission<F, E>
+{
+    fn begin_full_ring_proof<Cfg>(
+        &self,
+        setup: &akita_types::FullRingSetupDescriptor,
+        schedules: &TrustedScheduleCatalog<Cfg>,
+        plan: &FoldSchedule,
+        layout: &OpeningClaimsLayout,
+    ) -> Result<Self::ProofSessionHandle, AkitaError>
+    where
+        Cfg: CommitmentConfig<Field = F, ExtField = E>;
+
+    /// Opt in to one bounded accumulation cursor; ordinary proof admission is
+    /// intentionally unchanged. The immutable plan remains an installation input.
+    fn begin_full_ring_accumulation<Cfg>(
+        &self,
+        setup: &akita_types::FullRingSetupDescriptor,
+        schedules: &TrustedScheduleCatalog<Cfg>,
+        plan: &FoldSchedule,
+        accumulation: &akita_types::full_ring_accumulation::FullRingAccumulationPlan,
+        updates: usize,
+    ) -> Result<Self::ProofSessionHandle, AkitaError>
+    where
+        Cfg: CommitmentConfig<Field = F, ExtField = E>;
+}

@@ -122,6 +122,9 @@ where
             D,
         >,
 {
+    if plan.source_view() != akita_params::SourceOpeningView::Decoded {
+        return Err(AkitaError::InvalidInput("canonical recursive kernels require decoded views".into()));
+    }
     let prepared = prepared.ok_or_else(|| {
         AkitaError::Internal("recursive opening requires prepared backend state".into())
     })?;

@@ -162,7 +162,8 @@ where
                 .enumerate()
                 .map(|(index, group)| match group.kind() {
                     OpeningFamily::SubringCoefficientPacking(point) => Ok((index, point)),
-                    OpeningFamily::EvaluationTrace(_) => Err(AkitaError::Internal(
+                    OpeningFamily::EvaluationTrace(_)
+                    | OpeningFamily::FullRingScalarExtension(_) => Err(AkitaError::Internal(
                         "ring-switch coefficient-packing group has an evaluation-trace opening"
                             .into(),
                     )),
@@ -181,6 +182,11 @@ where
                 },
             )?;
             OpeningFamily::SubringCoefficientPacking(semantics)
+        }
+        OpeningFamily::FullRingScalarExtension(_) => {
+            return Err(AkitaError::InvalidSetup(
+                "coefficient-row full-ring relation cannot enter legacy ring switching".into(),
+            ))
         }
     };
     Ok(RingSwitchFinalization {

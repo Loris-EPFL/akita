@@ -753,6 +753,11 @@ pub fn ring_switch_alpha_loss_factor(
     inner_ring_dimension: usize,
 ) -> Result<u64, AkitaError> {
     let degree_bound = match opening_method {
+        OpeningMethod::FullRingScalarExtension { .. } => {
+            return Err(AkitaError::InvalidSetup(
+                "exact coefficient rows have no ring-switch alpha challenge".into(),
+            ))
+        }
         OpeningMethod::EvaluationTrace => inner_ring_dimension
             .checked_mul(2)
             .and_then(|value| value.checked_sub(1)),

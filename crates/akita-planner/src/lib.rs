@@ -7,6 +7,9 @@
 //! producers to an approved scalar row while retaining its structural schedule
 //! skeleton; it falls back to [`find_schedule`] when that skeleton is
 //! infeasible.
+//! [`find_schedule_for_frozen_profiles`] preserves exact ordered originals and
+//! views, with native128 all-valid VM responses or the decoded Dense64 recipe,
+//! and searches the entire suffix without adaptation or decoded fallback.
 //! Every per-preset input is carried by the plain-value [`PlannerPolicy`] plus a `ring_challenge_config` /
 //! ring-challenge closure, so the planner names no `CommitmentConfig`
 //! types and depends only on `akita-schedules` / `akita-types` /
@@ -28,6 +31,7 @@ pub use akita_schedules::{
 
 mod diagnostics;
 pub mod emit;
+mod frozen_roster;
 #[cfg(feature = "catalog-gen")]
 pub mod generated_families;
 mod planner;
@@ -42,7 +46,12 @@ pub use emit::{
 };
 #[cfg(feature = "test-support")]
 pub use planner::find_schedule_for_test_relation_mode;
-pub use planner::{find_adapted_schedule, find_schedule};
+pub use planner::{find_adapted_schedule, find_schedule, find_schedule_for_frozen_profiles};
+pub use planner::frozen_response_depth_choices;
+pub use frozen_roster::{
+    plan_frozen_source_roster, FrozenGroupLedger, FrozenJointResponseCertificate,
+    FrozenRosterLedger, FrozenRosterPlan, FrozenRosterRequest,
+};
 pub use policy::InnerBasisSource;
 pub use schedule_params::suffix_opening_layout;
 #[cfg(feature = "test-support")]

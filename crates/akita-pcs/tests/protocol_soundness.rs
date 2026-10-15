@@ -44,11 +44,7 @@ fn selection_for<Cfg: CommitmentConfig>(
     commitment: &CommittedGroup<Cfg::Field>,
     schedules: &TrustedScheduleCatalog<Cfg>,
 ) -> OpeningScheduleSelection {
-    schedules
-        .resolve_profiles(&CommittedGroupBatchProfile {
-            final_group: *commitment.profile(),
-            precommitteds: Vec::new(),
-        })
+    schedules.resolve_profiles(&CommittedGroupBatchProfile { final_group: *commitment.profile(), precommitteds: Vec::new() }, &[akita_params::SourceOpeningView::Decoded])
         .expect("select schedule")
         .selection()
 }
@@ -163,21 +159,14 @@ where
         )
         .expect("commitment");
     let selection = selection_for::<Cfg>(&commitment, scheme.schedules());
-    let proof = scheme
-        .batched_prove(
-            &setup,
-            prove_input::<Cfg>(
-                selection,
-                &point,
-                opening,
-                &commitment,
-                hint,
-                scheme.schedules(),
-            ),
-            &stack,
-            label,
-            BasisMode::Lagrange,
-        )
+    let proof = { let native_setup = &setup; let native_opening = prove_input::<Cfg>(
+        selection,
+        &point,
+        opening,
+        &commitment,
+        hint,
+        scheme.schedules(),
+    ); let native_session = label; let native_basis = BasisMode::Lagrange; akita_pcs::prepare_native_prover_context(native_setup.expanded.descriptor(), scheme.schedules(), &native_opening, native_session, &[], native_basis, 0).and_then(|native_context| scheme.batched_prove(native_setup, native_opening, &stack, native_session, native_context.registry(), native_context.augmentation(), native_basis)) }
         .expect("native proof");
     (verifier_setup, commitment, proof, point, opening, selection)
 }
@@ -213,10 +202,7 @@ where
         .resolve_selection(selection)
         .expect("selected schedule");
     let bound = akita_schedules::expanded_schedule_proof_bound(
-        &ScheduleLookupKey {
-            final_group: resolved.profiles().final_group.group,
-            precommitteds: resolved.profiles().precommitteds.clone(),
-        },
+        &resolved.lookup_key().expect("view-aware row key"),
         resolved.schedule(),
         &akita_config::policy_of::<Cfg>(),
     )
@@ -227,12 +213,7 @@ where
     );
     let verify = |candidate: &[u8], claimed: Cfg::ExtField, session: &[u8]| {
         scheme.verifier(setup.clone()).and_then(|verifier| {
-            verifier.batched_verify(
-                candidate,
-                session,
-                verify_input::<Cfg>(selection, &point, claimed, &commitment),
-                BasisMode::Lagrange,
-            )
+            { let native_statement = verify_input::<Cfg>(selection, &point, claimed, &commitment); let native_session = session; let native_basis = BasisMode::Lagrange; akita_pcs::prepare_native_proof_context(verifier.setup().expanded().descriptor(), verifier.schedules(), &native_statement, native_session, &[], native_basis, 0).and_then(|native_context| verifier.batched_verify(candidate, native_session, native_context.registry(), native_context.augmentation(), native_statement, native_basis)) }
         })
     };
 

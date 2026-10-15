@@ -301,7 +301,7 @@ fn commit_fixture_with_profile(
     profile: GroupCommitPhaseParams,
 ) -> Result<(Commitment<F>, PortableCommitmentHandle<F>), AkitaError> {
     let execution_plan = CommitmentExecutionPlan::for_root(&profile)?;
-    let expanded = ctx.backend().prepared_expanded_setup(ctx.prepared());
+    let expanded = ctx.backend().prepared_expanded_setup(ctx.prepared())?;
     let executor = CommitmentExecutor::cpu(
         ctx.backend(),
         ctx.prepared(),
@@ -610,4 +610,209 @@ fn imported_root_outer_image_matches_full_cpu_commitment() {
             .compress_root_outer_image(profile, outer_image)
             .is_err());
     }
+}
+
+#[test]
+fn full_ring_boolean_admission_preserves_onehot_descriptor_and_legacy_checks() {
+    use akita_params::sis::CommittedSourceClass;
+    use jolt_field::Prime128OffsetA7F7 as K;
+    let contract = |chunk| {
+        CommittedSourceContract::try_new(
+            CommittedSourceClass::UnitOneHot {
+                source_chunk_size: chunk,
+            },
+            akita_params::DecompositionParams {
+                log_basis: 5,
+                log_commit_bound: 1,
+                log_open_bound: Some(128),
+            },
+        )
+        .unwrap()
+    };
+    let boolean = contract(1);
+    let whole_grid_norms = boolean.source_norms(5, 1, 128, 1 << 16).unwrap();
+    assert_eq!(whole_grid_norms.l2_sq, 1 << 16);
+    assert_eq!(whole_grid_norms.coefficient_sq_max, 1);
+    let canonical = CommittedSourceEncoding::CanonicalCoefficientTable;
+    for chunk in [16, 256] {
+        let sparse_norms = contract(chunk).source_norms(5, 1, 128, 1 << 16).unwrap();
+        assert!(sparse_norms.l2_sq <= whole_grid_norms.l2_sq);
+        assert!(sparse_norms.coefficient_sq_max <= whole_grid_norms.coefficient_sq_max);
+        let poly = crate::OneHotPoly::<K, u8>::new(
+            chunk,
+            (0..16).map(|row| Some((row % chunk) as u8)).collect(),
+        )
+        .unwrap();
+        let sources = std::slice::from_ref(&poly);
+        let original = poly.descriptor().unwrap();
+        ensure_full_ring_sources_match_declared_class::<K, _>(
+            sources,
+            boolean,
+            GadgetDigits::new(5, 1),
+            canonical,
+            true,
+        )
+        .unwrap();
+        assert_eq!(poly.descriptor().unwrap(), original);
+        assert_eq!(
+            original.class(),
+            crate::commitment::CommitSourceClass::OneHot { chunk_size: chunk }
+        );
+        assert!(ensure_sources_match_declared_class::<K, _>(sources, boolean).is_err());
+        ensure_sources_match_declared_class::<K, _>(sources, contract(chunk)).unwrap();
+        assert!(ensure_full_ring_sources_match_declared_class::<K, _>(
+            sources,
+            contract(8),
+            GadgetDigits::new(5, 1),
+            canonical,
+            true,
+        )
+        .is_err());
+        for (digits, encoding, method) in [
+            (GadgetDigits::new(5, 1), canonical, false),
+            (GadgetDigits::new(5, 2), canonical, true),
+            (GadgetDigits::new(4, 1), canonical, true),
+            (
+                GadgetDigits::new(5, 1),
+                CommittedSourceEncoding::TensorSubfieldProjection {
+                    extension_degree: 2,
+                },
+                true,
+            ),
+        ] {
+            assert!(ensure_full_ring_sources_match_declared_class::<K, _>(
+                sources, boolean, digits, encoding, method,
+            )
+            .is_err());
+        }
+    }
+    // Numeric Boolean values alone do not establish the structural contract.
+    let dense = DensePoly::<K>::from_field_evals(7, &[K::from_u64(1); 128]).unwrap();
+    assert!(ensure_full_ring_sources_match_declared_class::<K, _>(
+        &[dense],
+        boolean,
+        GadgetDigits::new(5, 1),
+        canonical,
+        true,
+    )
+    .is_err());
+}
+
+#[test]
+fn original_ram_admission_prices_planes_not_their_decoded_field_values() {
+    use akita_params::sis::CommittedSourceClass;
+    use jolt_field::Prime128OffsetA7F7 as K;
+    let plan = crate::opaque::CommitInnerPlan {
+        ring_dimension: 128,
+        num_live_blocks: 1,
+        n_a: 3,
+        num_positions_per_block: 1,
+        num_digits_inner: 26,
+        log_basis_inner: 5,
+    };
+    let mut remaining = akita_params::field_modulus::<K>().unwrap();
+    let mut digits = vec![0i8; 26 * 128];
+    for plane in 0..26 {
+        let low = (remaining & 31) as i8;
+        remaining >>= 5;
+        digits[plane * 128] = if low >= 16 {
+            remaining += 1;
+            low - 32
+        } else {
+            low
+        };
+    }
+    assert_eq!(remaining, 0);
+    let source = crate::PackedRamSource::from_signed_digits(7, plan, digits).unwrap();
+    let modulus = akita_params::field_modulus::<K>().unwrap();
+    assert_eq!(
+        <_ as CommitmentSource<K>>::committed_centered_reach(&source, modulus, modulus / 2)
+            .unwrap(),
+        (0, 0)
+    );
+    let contract = |class, bits| {
+        CommittedSourceContract::try_new(
+            class,
+            akita_params::DecompositionParams {
+                log_basis: 5,
+                log_commit_bound: bits,
+                log_open_bound: Some(128),
+            },
+        )
+        .unwrap()
+    };
+    for bits in [1, 128] {
+        assert!(ensure_sources_fit_accepted_interval::<K, _>(
+            std::slice::from_ref(&source),
+            GadgetDigits::new(5, 26),
+            contract(CommittedSourceClass::BalancedSignedDigit, bits),
+        )
+        .is_err());
+    }
+    let original = contract(CommittedSourceClass::OriginalBalancedDigitPlanes, 128);
+    ensure_sources_fit_accepted_interval::<K, _>(
+        std::slice::from_ref(&source),
+        GadgetDigits::new(5, 26),
+        original,
+    )
+    .unwrap();
+    assert!(ensure_sources_fit_accepted_interval::<K, _>(
+        &[source],
+        GadgetDigits::new(5, 25),
+        original,
+    )
+    .is_err());
+    // Every plane, notably plane 25, permits the negative endpoint.
+    let extrema = crate::PackedRamSource::from_signed_digits(7, plan, vec![-16; 26 * 128]).unwrap();
+    ensure_sources_fit_accepted_interval::<K, _>(&[extrema], GadgetDigits::new(5, 26), original)
+        .unwrap();
+    assert_eq!(
+        original.source_norms(5, 26, 128, 128).unwrap().l2_sq,
+        26 * 256 * 128
+    );
+    let canonical = DensePoly::<K>::from_field_evals(7, &[K::from_u64(0); 128]).unwrap();
+    assert!(ensure_sources_fit_accepted_interval::<K, _>(
+        &[canonical],
+        GadgetDigits::new(5, 26),
+        original,
+    )
+    .is_err());
+}
+
+#[test]
+fn producer_admission_binds_declared_field_width_before_coefficient_reach() {
+    use akita_params::sis::CommittedSourceClass;
+    use jolt_field::Prime128OffsetA7F7 as K;
+    let source = DensePoly::<K>::from_field_evals(7, &[K::from_u64(7); 128]).unwrap();
+    let contract = |bits, open| {
+        CommittedSourceContract::try_new(
+            CommittedSourceClass::BalancedSignedDigit,
+            akita_params::DecompositionParams {
+                log_basis: 5,
+                log_commit_bound: bits,
+                log_open_bound: open,
+            },
+        )
+        .unwrap()
+    };
+    let sources = std::slice::from_ref(&source);
+    let error = ensure_sources_fit_accepted_interval::<K, _>(
+        sources,
+        GadgetDigits::new(5, 1),
+        contract(1, None),
+    )
+    .unwrap_err();
+    assert!(error.to_string().contains("producer contract field width"));
+    assert!(ensure_sources_fit_accepted_interval::<K, _>(
+        sources,
+        GadgetDigits::new(5, 1),
+        contract(1, Some(128)),
+    )
+    .is_err());
+    ensure_sources_fit_accepted_interval::<K, _>(
+        sources,
+        GadgetDigits::new(5, 1),
+        contract(5, Some(128)),
+    )
+    .unwrap();
 }

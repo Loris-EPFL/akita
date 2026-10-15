@@ -18,7 +18,7 @@
 
 use akita_config::{CommitmentConfig, TrustedScheduleCatalog};
 use akita_error::AkitaError;
-use akita_params::{OpeningScheduleSelection, ScheduleLookupKey};
+use akita_params::OpeningScheduleSelection;
 use std::fmt;
 use std::sync::{Arc, Mutex};
 use tracing::field::{Field, Visit};
@@ -78,10 +78,7 @@ pub(crate) fn prove_matching_byte_model<Cfg: CommitmentConfig>(
     let resolved = schedules
         .resolve_selection(selection)
         .expect("selected schedule");
-    let key = ScheduleLookupKey {
-        final_group: resolved.profiles().final_group.group,
-        precommitteds: resolved.profiles().precommitteds.clone(),
-    };
+    let key = resolved.lookup_key().expect("view-aware row key");
     let schedule = resolved.schedule();
     let policy = akita_config::policy_of::<Cfg>();
     let bound = akita_schedules::expanded_schedule_proof_bound(&key, schedule, &policy)
@@ -89,7 +86,7 @@ pub(crate) fn prove_matching_byte_model<Cfg: CommitmentConfig>(
     let z_payload_cap = schedule.terminal.response_shape.layout.z_payload_bytes();
     let nonce_max = akita_params::derive_transcript_grinding_plan_from_public_shape(
         schedule,
-        &key.opening_layout().expect("opening layout"),
+        &resolved.opening_layout().expect("opening layout"),
         policy.transcript_grinding_order().expect("grinding order"),
         policy.claim_ext_degree,
     )

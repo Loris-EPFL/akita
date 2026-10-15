@@ -307,7 +307,7 @@ impl NttExecutionRequirements {
                     self.add_precommitted_relation(level, precommitted, num_chunks)?;
                 }
             }
-            RingRelationMode::ReducedEvaluation => {}
+            RingRelationMode::ReducedEvaluation | RingRelationMode::ExactCoefficientRows => {}
         }
         Ok(())
     }
@@ -342,7 +342,7 @@ impl NttExecutionRequirements {
                 )?,
                 extent,
             ),
-            RingRelationMode::ReducedEvaluation => Ok(()),
+            RingRelationMode::ReducedEvaluation | RingRelationMode::ExactCoefficientRows => Ok(()),
         }
     }
 

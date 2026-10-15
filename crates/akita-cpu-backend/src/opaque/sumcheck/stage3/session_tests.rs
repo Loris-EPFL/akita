@@ -166,6 +166,7 @@ fn stage3_retains_setup_across_cache_eviction() {
         .ensure_ntt_slot(
             backend.prepared().unwrap(),
             akita_types::NttCacheKey {
+                matrix: None,
                 ring_d: 64,
                 num_ring_elements: 1,
                 domain: akita_types::NttTransformDomain::Negacyclic,

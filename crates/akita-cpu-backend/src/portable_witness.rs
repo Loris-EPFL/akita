@@ -122,7 +122,7 @@ impl<F: Field + CanonicalEncoding + 'static, E> CpuBackend<F, E> {
                 }
                 Some(BalancedDecomposePow2Params::new(levels, log_basis))
             }
-            RingRelationMode::ReducedEvaluation => None,
+            RingRelationMode::ReducedEvaluation | RingRelationMode::ExactCoefficientRows => None,
         };
         let mut patches = Vec::new();
         for layer in witness_layout.compression_layers() {

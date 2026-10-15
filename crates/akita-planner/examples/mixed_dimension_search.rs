@@ -96,10 +96,7 @@ fn main() -> Result<(), akita_error::AkitaError> {
         precommit_layout,
         &independent.schedule.root.params,
     )?;
-    let recursive_key = ScheduleLookupKey {
-        final_group: PolynomialGroupLayout::new(32, 2),
-        precommitteds: vec![descriptor, descriptor],
-    };
+    let recursive_key = ScheduleLookupKey::decoded(PolynomialGroupLayout::new(32, 2), vec![descriptor, descriptor]);
     let precommitted_source_contracts = vec![OneHot::committed_source_contract()?; 2];
     let adaptive_recursive = find_schedule(
         &recursive_key,

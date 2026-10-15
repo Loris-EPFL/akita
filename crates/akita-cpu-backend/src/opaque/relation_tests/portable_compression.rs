@@ -122,6 +122,9 @@ fn portable_fragments_match_complete_cpu_witness_in_both_modes() {
                     .unwrap(),
                 ),
                 RingRelationMode::ReducedEvaluation => RelationDQuotientWitness::ReducedEvaluation,
+                RingRelationMode::ExactCoefficientRows => {
+                    RelationDQuotientWitness::ExactCoefficientRows
+                }
             };
             let full = cpu_recursive_witness_build(
                 &instance,
@@ -296,10 +299,9 @@ fn portable_fragment_validates_relation_order_for_grouped_q128_layout() {
         .profiles()
         .final_group;
     let resolved = catalog
-        .resolve_key(&ScheduleLookupKey {
-            final_group: PolynomialGroupLayout::new(32, 2),
-            precommitteds: vec![precommitted, precommitted],
-        })
+        .resolve_key(&ScheduleLookupKey::decoded(
+            PolynomialGroupLayout::new(32, 2), vec![precommitted, precommitted],
+        ))
         .unwrap();
     let params = &resolved.schedule().root.params;
     let batch = params

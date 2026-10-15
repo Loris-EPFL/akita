@@ -1,3 +1,6 @@
+# Rust jobs build sibling akita/ and jolt/ checkouts. Keep the event revision
+# for this repository so PR gates test the proposed changes; the companion is
+# pinned to the supported akita-query-relation-accumulation-v8 branch.
 # Smoke compile/test for profile/akita-recursion: the standalone sub-workspace
 # that packages the Akita PCS verifier for execution inside a Jolt zkVM guest.
 #
@@ -38,18 +41,29 @@ jobs:
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: profile/akita-recursion
+        working-directory: akita/profile/akita-recursion
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: akita
+      - name: Checkout paired jolt
+        id: paired-jolt
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: Loris-EPFL/jolt
+          ref: akita-query-relation-accumulation-v8
+          path: jolt
+          persist-credentials: false
       - uses: actions-rust-lang/setup-rust-toolchain@ecabd13d1c56bd1345c230e542e9144811ad706f # v2.0.0
         with:
+          rust-src-dir: akita
           toolchain: 1.95
           targets: riscv32imac-unknown-none-elf,riscv64imac-unknown-none-elf
           cache: false
       - name: Cache profile/akita-recursion build
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
-          workspaces: profile/akita-recursion
+          workspaces: akita/profile/akita-recursion
           # The recursion workspace depends on Akita crates outside its own
           # workspace root. Never restore their target artifacts across source
           # revisions, or Cargo can combine stale types with current schedules.

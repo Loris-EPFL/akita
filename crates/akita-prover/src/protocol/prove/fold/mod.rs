@@ -85,6 +85,17 @@ where
     let trace_opening_batch = block_claims.opening_layout().clone();
     let trace_opening_batch = &trace_opening_batch;
     let context = backend.proof_context(session, level)?;
+    trace_opening_batch.validate_basis(basis)?;
+    if (run_eor || level != 0)
+        && trace_opening_batch
+            .views()
+            .iter()
+            .any(|view| *view != akita_params::SourceOpeningView::Decoded)
+    {
+        return Err(AkitaError::InvalidInput(
+            "original RAM planes require the unreduced root opening".into(),
+        ));
+    }
     let (protocol_points, reduction) = if run_eor {
         let groups = (0..trace_opening_batch.num_groups())
             .map(|index| {
@@ -188,6 +199,7 @@ where
             group_alpha_bits,
             group_lp.opening_method(),
             logical_len,
+            opening_batch.group_view(group_index)?,
         );
         requests.push(crate::backend::GroupOpeningRequest {
             context: context.for_group(group_index),
@@ -449,7 +461,8 @@ where
                 .iter()
                 .map(|group| match group.kind() {
                     OpeningFamily::EvaluationTrace(point) => Ok(point.clone()),
-                    OpeningFamily::SubringCoefficientPacking(_) => Err(AkitaError::Internal(
+                    OpeningFamily::SubringCoefficientPacking(_)
+                    | OpeningFamily::FullRingScalarExtension(_) => Err(AkitaError::Internal(
                         "evaluation-trace relation contains a coefficient-packing group".into(),
                     )),
                 })
@@ -512,7 +525,7 @@ where
         ),
         FoldSuccessorParams::Terminal(params) => (
             crate::backend::WitnessCommitmentParameters::Terminal(params.clone()),
-            None,
+            Some(params.source_encoding),
         ),
     };
     let commit_plan = crate::backend::ValidatedRecursiveWitnessCommitPlan::new(
@@ -743,6 +756,11 @@ where
         OpeningFamily::EvaluationTrace(_) => row_coefficients
             .clone()
             .unwrap_or_else(|| instance.gamma().iter().copied().map(E::lift_base).collect()),
+        OpeningFamily::FullRingScalarExtension(_) => {
+            return Err(AkitaError::InvalidSetup(
+                "full-ring coefficient rows do not use legacy gamma batching".into(),
+            ))
+        }
     };
     let Stage2ProveOutput {
         challenges: sumcheck_challenges,

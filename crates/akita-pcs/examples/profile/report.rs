@@ -224,8 +224,8 @@ struct PlannedGroupReport {
     opening_method: &'static str,
     challenge_subring_dimension: Option<usize>,
     packing_factor: Option<usize>,
-    packing_partial_width: Option<usize>,
-    packing_quotient_width: Option<usize>,
+    partial_base_field_width: Option<usize>,
+    quotient_base_field_width: Option<usize>,
     a_width: usize,
     b_width: usize,
     d_width: usize,
@@ -304,6 +304,15 @@ fn opening_report_geometry(
                 quotient_width: Some(geometry.partial_base_field_width()),
             })
         }
+        OpeningMethod::FullRingScalarExtension { .. } => Ok(OpeningReportGeometry {
+            method: "full_ring_scalar_extension",
+            challenge_subring_dimension: None,
+            packing_factor: None,
+            partial_width: Some(
+                opening_method.physical_coefficient_width(extension_degree, a_ring_dimension)?,
+            ),
+            quotient_width: Some(0),
+        }),
     }
 }
 
@@ -413,8 +422,8 @@ impl PlannedGroupReport {
             opening_method: opening.method,
             challenge_subring_dimension: opening.challenge_subring_dimension,
             packing_factor: opening.packing_factor,
-            packing_partial_width: opening.partial_width,
-            packing_quotient_width: opening.quotient_width,
+            partial_base_field_width: opening.partial_width,
+            quotient_base_field_width: opening.quotient_width,
             a_width: params.inner().matrix.input_width(),
             b_width: params.outer().matrix.input_width(),
             d_width: params.open().matrix.input_width(),
@@ -517,8 +526,8 @@ impl PlannedGroupReport {
             opening_method: opening.method,
             challenge_subring_dimension: opening.challenge_subring_dimension,
             packing_factor: opening.packing_factor,
-            packing_partial_width: opening.partial_width,
-            packing_quotient_width: opening.quotient_width,
+            partial_base_field_width: opening.partial_width,
+            quotient_base_field_width: opening.quotient_width,
             a_width: layout.inner.matrix.input_width(),
             b_width: layout.outer.matrix.input_width(),
             d_width: shared_open.input_width(),
@@ -563,7 +572,7 @@ impl PlannedGroupReport {
             RingRelationMode::QuotientLift => {
                 compute_num_digits_field_width(field_bits, self.log_basis_open)
             }
-            RingRelationMode::ReducedEvaluation => 0,
+            RingRelationMode::ReducedEvaluation | RingRelationMode::ExactCoefficientRows => 0,
         };
         tracing::info!(
             label,
@@ -582,8 +591,8 @@ impl PlannedGroupReport {
             opening_method = self.opening_method,
             challenge_subring_dimension = ?self.challenge_subring_dimension,
             packing_factor = ?self.packing_factor,
-            packing_partial_width = ?self.packing_partial_width,
-            packing_quotient_width = ?self.packing_quotient_width,
+            partial_base_field_width = ?self.partial_base_field_width,
+            quotient_base_field_width = ?self.quotient_base_field_width,
             a_width = self.a_width,
             b_width = self.b_width,
             d_width = self.d_width,
@@ -809,7 +818,7 @@ pub(crate) fn emit_runtime_schedule_summary(
             RingRelationMode::QuotientLift => {
                 compute_num_digits_field_width(field_bits, lp.open().digits.log_basis)
             }
-            RingRelationMode::ReducedEvaluation => 0,
+            RingRelationMode::ReducedEvaluation | RingRelationMode::ExactCoefficientRows => 0,
         };
         tracing::info!(
             label,
@@ -826,8 +835,8 @@ pub(crate) fn emit_runtime_schedule_summary(
             opening_method = opening.method,
             challenge_subring_dimension = ?opening.challenge_subring_dimension,
             packing_factor = ?opening.packing_factor,
-            packing_partial_width = ?opening.partial_width,
-            packing_quotient_width = ?opening.quotient_width,
+            partial_base_field_width = ?opening.partial_width,
+            quotient_base_field_width = ?opening.quotient_width,
             extension_opening_reduction_present = extension_opening_reduction_bytes != 0,
             extension_opening_reduction_bytes,
             a_width = lp.inner().matrix.input_width(),

@@ -172,7 +172,27 @@ impl<F: Field, E> CpuBackend<F, E> {
                 "predecomposed dense planes disagree with the inner stage plan".into(),
             ));
         }
-        let (digit_planes, remainder) = planes.bytes.as_chunks::<D>();
+        let bytes = match &planes.bytes {
+            crate::commitment::DigitPlaneStorage::Unpacked(bytes) => *bytes,
+            crate::commitment::DigitPlaneStorage::Packed(digits) => {
+                // Each original plane is already a balanced ring. Flatten only
+                // the position/digit axes; never decode K and decompose again.
+                let positions = plan
+                    .num_positions_per_block
+                    .checked_mul(plan.num_digits_inner)
+                    .ok_or_else(|| AkitaError::InvalidInput("packed A width overflow".into()))?;
+                return self.recursive_packed_witness_commit_rows::<D>(
+                    prepared,
+                    *digits,
+                    plan.n_a,
+                    positions,
+                    plan.num_live_blocks,
+                    1,
+                    plan.log_basis_inner,
+                );
+            }
+        };
+        let (digit_planes, remainder) = bytes.as_chunks::<D>();
         if !remainder.is_empty() {
             return Err(AkitaError::InvalidSize {
                 expected: D,

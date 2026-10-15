@@ -1,7 +1,9 @@
 use crate::opaque::CommitInnerPlan;
 use akita_error::AkitaError;
 use akita_params::{CompressionChainPlan, RingRelationMode};
+#[cfg(test)]
 use akita_types::AkitaSetupDescriptor;
+use akita_types::AkitaSetupIdentity;
 use std::any::Any;
 use std::marker::PhantomData;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -20,7 +22,8 @@ pub(crate) enum CompressionState {}
 #[derive(Clone, PartialEq, Eq)]
 pub(crate) struct CommitmentStateBinding {
     invocation: u64,
-    setup: AkitaSetupDescriptor,
+    setup: AkitaSetupIdentity,
+    matrix_roles: Option<Arc<super::executor::FullRingCommitmentRoles>>,
     inner_plan: CommitInnerPlan,
     source_count: usize,
     relation_mode: Option<RingRelationMode>,
@@ -30,7 +33,7 @@ pub(crate) struct CommitmentStateBinding {
 impl CommitmentStateBinding {
     /// Construct a checked state binding for one commitment request.
     pub(crate) fn new(
-        setup: AkitaSetupDescriptor,
+        setup: impl Into<AkitaSetupIdentity>,
         inner_plan: CommitInnerPlan,
         source_count: usize,
         relation_mode: Option<RingRelationMode>,
@@ -51,7 +54,8 @@ impl CommitmentStateBinding {
         }
         Ok(Self {
             invocation: NEXT_INVOCATION_ID.fetch_add(1, Ordering::Relaxed),
-            setup,
+            setup: setup.into(),
+            matrix_roles: None,
             inner_plan,
             source_count,
             relation_mode,
@@ -59,8 +63,21 @@ impl CommitmentStateBinding {
         })
     }
 
+    pub(crate) fn with_matrix_roles(
+        mut self,
+        roles: Option<Arc<super::executor::FullRingCommitmentRoles>>,
+    ) -> Result<Self, AkitaError> {
+        if matches!(&self.setup, AkitaSetupIdentity::FullRing(_)) != roles.is_some() {
+            return Err(AkitaError::InvalidSetup(
+                "commitment state has mismatched setup/role identity".into(),
+            ));
+        }
+        self.matrix_roles = roles;
+        Ok(self)
+    }
+
     #[cfg(test)]
-    pub(crate) const fn setup(&self) -> &AkitaSetupDescriptor {
+    pub(crate) const fn setup(&self) -> &AkitaSetupIdentity {
         &self.setup
     }
 

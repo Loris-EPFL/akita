@@ -154,27 +154,38 @@ pub(super) fn derive_inner_commitment_candidate(
         .checked_mul(d_a)
         .and_then(|count| count.checked_mul(num_chunks))
         .ok_or_else(|| AkitaError::InvalidSetup("fold response width overflow".into()))?;
-    let Ok(universal_digits) = fold_policy.num_digits_fold(HonestFoldSizingQuery {
-        ring_dimension: d_a,
-        challenge_dimension,
-        num_claims,
-        num_live_ring_elements_per_claim,
-        num_live_blocks,
-        num_positions_per_block,
-        num_chunks,
-        num_fold_coeffs,
-        witness_norms,
-        log_basis_response: log_basis_open,
-        challenge_config: ring_challenge_cfg,
-    }) else {
-        return Ok(None);
+    let num_digits_fold = if policy.opening_family.is_full_ring_e2() {
+        let bound = (num_claims as u128)
+            .checked_mul(num_live_blocks as u128)
+            .and_then(|n| n.checked_mul(56))
+            .and_then(|n| n.checked_mul(witness_norms.infinity_norm()))
+            .ok_or_else(|| {
+                AkitaError::InvalidSetup("full-ring all-valid response bound overflow".into())
+            })?;
+        akita_params::full_ring_response_depth(bound)?
+    } else {
+        let Ok(universal_digits) = fold_policy.num_digits_fold(HonestFoldSizingQuery {
+            ring_dimension: d_a,
+            challenge_dimension,
+            num_claims,
+            num_live_ring_elements_per_claim,
+            num_live_blocks,
+            num_positions_per_block,
+            num_chunks,
+            num_fold_coeffs,
+            witness_norms,
+            log_basis_response: log_basis_open,
+            challenge_config: ring_challenge_cfg,
+        }) else {
+            return Ok(None);
+        };
+        modeled_linf_cap
+            .map(|cap| {
+                num_digits_for_linf_cap(cap, policy.decomposition.field_bits(), log_basis_open)
+                    .min(universal_digits)
+            })
+            .unwrap_or(universal_digits)
     };
-    let num_digits_fold = modeled_linf_cap
-        .map(|cap| {
-            num_digits_for_linf_cap(cap, policy.decomposition.field_bits(), log_basis_open)
-                .min(universal_digits)
-        })
-        .unwrap_or(universal_digits);
     let Some(norm_s) = rounded_up_role_a_inf_norm(
         policy.sis_security_policy,
         policy.sis_table_digest,

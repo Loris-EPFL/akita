@@ -85,6 +85,7 @@ where
             .map(|point| match point {
                 OpeningFamily::EvaluationTrace(point) => Ok(point.clone()),
                 OpeningFamily::SubringCoefficientPacking(_) => Err(AkitaError::InvalidProof),
+                OpeningFamily::FullRingScalarExtension(never) => match *never {},
             })
             .collect::<Result<Vec<_>, _>>()?;
         let evaluation_trace = prepare_evaluation_trace::<F, E>(&EvaluationTraceInputs {

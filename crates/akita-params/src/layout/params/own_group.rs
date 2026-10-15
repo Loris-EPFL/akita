@@ -53,6 +53,10 @@ impl CommittedGroupParams {
         self.own_group().opening.opening_method
     }
 
+    pub fn source_view(&self) -> crate::SourceOpeningView {
+        self.own_group().opening.source_view
+    }
+
     /// Fold-challenge family of this fold's own new group.
     #[inline]
     #[must_use]

@@ -88,7 +88,19 @@ mod tests {
         .unwrap();
         let mut claims = [E::from_u64(3), E::from_u64(5), E::from_u64(8)];
         let range_image = E::from_u64(13);
-        let state = new_prover_channel(b"native-stage1", b"fixture").unwrap();
+        let mut events = vec![
+            crate::indexed_test_support::extension_message::<F, E>(
+                stage1_site(level, stage, ROLE_CHILD_CLAIMS), akita_transcript::ProtocolMessageKind::ProofAtoms, 3,
+            ),
+        ];
+        let run = plan.runs()[0];
+        crate::indexed_test_support::grinding(&mut events, run.site(), run.grind_bits(), run.nonce_bits());
+        crate::indexed_test_support::field_draw::<F, E>(&mut events, run.site().site_id(0));
+        events.push(crate::indexed_test_support::extension_message::<F, E>(
+            stage1_site(level, stage + 1, ROLE_RANGE_IMAGE), akita_transcript::ProtocolMessageKind::ProofAtoms, 1,
+        ));
+        let context = crate::indexed_test_support::context(b"native-stage1", events);
+        let state = new_prover_channel(&context).unwrap();
         let mut prover = ProverGrinding::new(state, &plan);
         stage1_child_claims::<F, E, _>(&mut prover, level, stage, &mut claims).unwrap();
         let prover_gamma = prover
@@ -97,7 +109,7 @@ mod tests {
         stage1_range_image::<F, E, _>(&mut prover, level, stage + 1, range_image).unwrap();
         let proof = prover.finish().unwrap();
 
-        let state = new_verifier_channel(b"native-stage1", b"fixture", &proof).unwrap();
+        let state = new_verifier_channel(&context, &proof).unwrap();
         let mut verifier = VerifierGrinding::new(state, &plan);
         let mut received = [E::zero(); 3];
         stage1_child_claims::<F, E, _>(&mut verifier, level, stage, &mut received).unwrap();

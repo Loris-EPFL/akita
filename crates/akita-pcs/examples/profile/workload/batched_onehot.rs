@@ -112,11 +112,7 @@ pub(crate) fn run_batched_onehot<FF, const D: usize, Cfg: CommitmentConfig<Field
             .unwrap();
         let commitments = [commitment];
         let selection = scheme
-            .schedules()
-            .resolve_profiles(&CommittedGroupBatchProfile {
-                final_group: *commitments[0].profile(),
-                precommitteds: Vec::new(),
-            })
+            .schedules().resolve_profiles(&CommittedGroupBatchProfile { final_group: *commitments[0].profile(), precommitteds: Vec::new() }, &[akita_params::SourceOpeningView::Decoded])
             .expect("select generated schedule row")
             .selection();
         let hints = vec![hint];
@@ -129,21 +125,14 @@ pub(crate) fn run_batched_onehot<FF, const D: usize, Cfg: CommitmentConfig<Field
             "profile setup-contribution mode"
         );
         eprintln!("[{label}] setup_contribution_mode: {setup_contribution_mode:?}");
-        let proof = scheme
-            .batched_prove(
-                &setup,
-                prover_claims::<Cfg>(
-                    scheme.schedules(),
-                    selection,
-                    &pt[..],
-                    &openings,
-                    &commitments[0],
-                    hints.into_iter().next().unwrap(),
-                ),
-                &backend,
-                b"profile",
-                BasisMode::Lagrange,
-            )
+        let proof = { let native_setup = &setup; let native_opening = prover_claims::<Cfg>(
+            scheme.schedules(),
+            selection,
+            &pt[..],
+            &openings,
+            &commitments[0],
+            hints.into_iter().next().unwrap(),
+        ); let native_session = b"profile"; let native_basis = BasisMode::Lagrange; akita_pcs::prepare_native_prover_context(native_setup.expanded.descriptor(), scheme.schedules(), &native_opening, native_session, &[], native_basis, 0).and_then(|native_context| scheme.batched_prove(native_setup, native_opening, &backend, native_session, native_context.registry(), native_context.augmentation(), native_basis)) }
             .unwrap();
         report_timing(label, "prove", t0.elapsed().as_secs_f64());
         let post_execution_ntt_metrics = backend
@@ -228,11 +217,7 @@ pub(crate) fn run_batched_onehot<FF, const D: usize, Cfg: CommitmentConfig<Field
     let prepare = || {
         verifier_claims(
             scheme
-                .schedules()
-                .resolve_profiles(&CommittedGroupBatchProfile {
-                    final_group: *commitments[0].profile(),
-                    precommitteds: Vec::new(),
-                })
+                .schedules().resolve_profiles(&CommittedGroupBatchProfile { final_group: *commitments[0].profile(), precommitteds: Vec::new() }, &[akita_params::SourceOpeningView::Decoded])
                 .expect("select verifier schedule row")
                 .selection(),
             &pt[..],
@@ -243,7 +228,7 @@ pub(crate) fn run_batched_onehot<FF, const D: usize, Cfg: CommitmentConfig<Field
     let verifier = scheme
         .verifier(verifier_setup.clone())
         .expect("verifier for the profile setup");
-    let verify = |claims| verifier.batched_verify(&proof, b"profile", claims, BasisMode::Lagrange);
+    let verify = |claims| { let native_statement = claims; let native_session = b"profile"; let native_basis = BasisMode::Lagrange; akita_pcs::prepare_native_proof_context(verifier.setup().expanded().descriptor(), verifier.schedules(), &native_statement, native_session, &[], native_basis, 0).and_then(|native_context| verifier.batched_verify(&proof, native_session, native_context.registry(), native_context.augmentation(), native_statement, native_basis)) };
     run_verifier_timings(label, pools, "batched profile", prepare, verify);
     report_verifier_ntt_cache_size(label, verifier.terminal_ntt_cache_bytes());
 }

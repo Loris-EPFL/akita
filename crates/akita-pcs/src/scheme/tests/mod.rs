@@ -133,7 +133,8 @@ where
             .map(|group| *group.commitment().profile())
             .collect(),
     };
-    let selection = scheme.schedules.resolve_profiles(&profiles)?.selection();
+    let views = claims.groups().iter().map(PolynomialGroupClaims::source_view).collect::<Vec<_>>();
+    let selection = scheme.schedules.resolve_profiles(&profiles, &views)?.selection();
     GroupBatchStatement::new(selection, claims)
 }
 
@@ -269,20 +270,13 @@ fn make_verify_fixture(num_vars: usize) -> VerifyFixture {
 
     let commitments = [commitment];
 
-    let proof = scheme
-        .batched_prove(
-            &setup,
-            prover_claims(
-                &scheme,
-                &opening_point[..],
-                &[opening],
-                &commitments[0],
-                prover_state,
-            ),
-            &stack,
-            b"test/prove",
-            BasisMode::Lagrange,
-        )
+    let proof = { let native_setup = &setup; let native_opening = prover_claims(
+        &scheme,
+        &opening_point[..],
+        &[opening],
+        &commitments[0],
+        prover_state,
+    ); let native_session = b"test/prove"; let native_basis = BasisMode::Lagrange; crate::prepare_native_prover_context(native_setup.expanded.descriptor(), scheme.schedules(), &native_opening, native_session, &[], native_basis, 0).and_then(|native_context| scheme.batched_prove(native_setup, native_opening, &stack, native_session, native_context.registry(), native_context.augmentation(), native_basis)) }
         .unwrap();
 
     let [commitment] = commitments;

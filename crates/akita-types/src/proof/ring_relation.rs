@@ -107,6 +107,7 @@ impl<F: Field> RingRelationGroupOpening<F> {
                     ambient_a_challenges: &opening.embedded_a_challenges,
                 }
             }
+            OpeningFamily::FullRingScalarExtension(never) => match *never {},
         }
     }
 
@@ -136,6 +137,7 @@ impl<F: Field> RingRelationGroupOpening<F> {
         match &self.kind {
             OpeningFamily::EvaluationTrace(opening) => &opening.challenges,
             OpeningFamily::SubringCoefficientPacking(opening) => &opening.subring_challenges,
+            OpeningFamily::FullRingScalarExtension(never) => match *never {},
         }
     }
 
@@ -144,6 +146,7 @@ impl<F: Field> RingRelationGroupOpening<F> {
         match &self.kind {
             OpeningFamily::EvaluationTrace(opening) => &opening.challenges,
             OpeningFamily::SubringCoefficientPacking(opening) => &opening.embedded_a_challenges,
+            OpeningFamily::FullRingScalarExtension(never) => match *never {},
         }
     }
 
@@ -156,6 +159,7 @@ impl<F: Field> RingRelationGroupOpening<F> {
             OpeningFamily::SubringCoefficientPacking(_) => Err(AkitaError::InvalidSetup(
                 "coefficient packing has no evaluation-trace multiplier point".into(),
             )),
+            OpeningFamily::FullRingScalarExtension(never) => match *never {},
         }
     }
 
@@ -165,6 +169,7 @@ impl<F: Field> RingRelationGroupOpening<F> {
         match self.kind {
             OpeningFamily::SubringCoefficientPacking(ref opening) => Some(opening.geometry),
             OpeningFamily::EvaluationTrace(_) => None,
+            OpeningFamily::FullRingScalarExtension(never) => match never {},
         }
     }
 }

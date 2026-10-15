@@ -238,6 +238,10 @@ macro_rules! small_field_test {
 vec![pre_hint, final_hint],
 scheme.schedules());
                     let selection = prover_data.selection();
+                    let context = akita_pcs::prepare_native_prover_context(
+                        setup.expanded.descriptor(), scheme.schedules(), &prover_data,
+                        label, &[], BasisMode::Lagrange, 0,
+                    ).expect("approved native context");
 
                     let proof = prove_matching_byte_model(scheme.schedules(), selection, || {
                         scheme.batched_prove(
@@ -245,6 +249,8 @@ scheme.schedules());
                             prover_data,
                             &stack,
                             label,
+                            context.registry(),
+                            context.augmentation(),
                             BasisMode::Lagrange,
                         )
                     });
@@ -415,6 +421,10 @@ scheme.schedules());
 vec![pre_hint, final_hint],
 scheme.schedules());
                     let selection = prover_data.selection();
+                    let context = akita_pcs::prepare_native_prover_context(
+                        setup.expanded.descriptor(), scheme.schedules(), &prover_data,
+                        label, &[], BasisMode::Lagrange, 0,
+                    ).expect("approved native context");
 
                     let proof = prove_matching_byte_model(scheme.schedules(), selection, || {
                         scheme.batched_prove(
@@ -422,6 +432,8 @@ scheme.schedules());
                             prover_data,
                             &stack,
                             label,
+                            context.registry(),
+                            context.augmentation(),
                             BasisMode::Lagrange,
                         )
                     });
@@ -555,10 +567,7 @@ fn fp32_onehot_multi_group() {
 
         let multi_schedule = scheme
             .schedules()
-            .resolve_key(&ScheduleLookupKey {
-                final_group: PolynomialGroupLayout::new(FINAL_NV, 1),
-                precommitteds: vec![pre_commitment.profile],
-            })
+            .resolve_key(&ScheduleLookupKey::decoded(PolynomialGroupLayout::new(FINAL_NV, 1), vec![pre_commitment.profile]))
             .expect("multi-group schedule")
             .schedule()
             .clone();
@@ -620,7 +629,7 @@ fn fp32_onehot_multi_group() {
 
         let session = b"completeness/fp32_onehot_multi_group";
         let proof = prove_matching_byte_model(scheme.schedules(), selection, || {
-            scheme.batched_prove(&setup, prover_data, &stack, session, BasisMode::Lagrange)
+            { let native_setup = &setup; let native_opening = prover_data; let native_session = session; let native_basis = BasisMode::Lagrange; akita_pcs::prepare_native_prover_context(native_setup.expanded.descriptor(), scheme.schedules(), &native_opening, native_session, &[], native_basis, 0).and_then(|native_context| scheme.batched_prove(native_setup, native_opening, &stack, native_session, native_context.registry(), native_context.augmentation(), native_basis)) }
         });
 
         let verify_claims = OpeningClaims::from_groups(vec![
@@ -633,12 +642,7 @@ fn fp32_onehot_multi_group() {
         scheme
             .verifier(verifier_setup.clone())
             .and_then(|verifier| {
-                verifier.batched_verify(
-                    &proof,
-                    session,
-                    GroupBatchStatement::new(selection, verify_claims).expect("statement"),
-                    BasisMode::Lagrange,
-                )
+                { let native_statement = GroupBatchStatement::new(selection, verify_claims).expect("statement"); let native_session = session; let native_basis = BasisMode::Lagrange; akita_pcs::prepare_native_proof_context(verifier.setup().expanded().descriptor(), verifier.schedules(), &native_statement, native_session, &[], native_basis, 0).and_then(|native_context| verifier.batched_verify(&proof, native_session, native_context.registry(), native_context.augmentation(), native_statement, native_basis)) }
             })
             .expect("fp32 multi-group verify");
     });

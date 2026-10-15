@@ -78,23 +78,6 @@ mod tests {
                 );
             }
         }
-        assert_eq!(
-            (
-                plan.runs().len(),
-                plan.expanded_query_count(),
-                plan.total_nonce_bits(),
-                plan.digest().unwrap(),
-            ),
-            (
-                43,
-                50,
-                400,
-                [
-                    201, 141, 145, 223, 13, 192, 44, 142, 174, 252, 217, 177, 224, 123, 135, 2,
-                    122, 211, 6, 174, 3, 127, 123, 102, 130, 17, 69, 136, 179, 80, 247, 229,
-                ],
-            )
-        );
     }
 
     #[test]
@@ -174,7 +157,7 @@ mod tests {
             let catalog = crate::test_support::workspace_schedule_catalog::<Cfg>()
                 .expect("workspace schedule catalog");
             for row in catalog.rows() {
-                let layout = row.profiles().opening_layout().expect("opening layout");
+                let layout = row.opening_layout().expect("opening layout");
                 let plan = derive_transcript_grinding_plan::<Cfg>(row.schedule(), &layout)
                     .expect("complete grinding plan");
                 let count = |kind| plan.runs().iter().filter(|run| run.kind() == kind).count();

@@ -39,6 +39,16 @@ pub(crate) fn opening_row_geometry(
         )),
         (OpeningMethod::EvaluationTrace, _) => RelationRowGeometry::native(d_a),
         (
+            method @ OpeningMethod::FullRingScalarExtension { .. },
+            CommittedSourceEncoding::CanonicalCoefficientTable,
+        ) => {
+            method.physical_coefficient_width(extension_degree, d_a)?;
+            RelationRowGeometry::new(d_a, extension_degree)
+        }
+        (OpeningMethod::FullRingScalarExtension { .. }, _) => Err(AkitaError::InvalidSetup(
+            "full-ring scalar extension requires the original canonical K source".into(),
+        )),
+        (
             OpeningMethod::SubringCoefficientPacking {
                 challenge_subring_dimension,
             },

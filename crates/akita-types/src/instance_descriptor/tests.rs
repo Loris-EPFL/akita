@@ -246,7 +246,7 @@ fn grinding_binding_has_the_exact_dedicated_descriptor_position() {
         .grinding
         .serialize_uncompressed(&mut grinding_bytes)
         .expect("serialize grinding binding");
-    assert_eq!(descriptor.version, 5);
+    assert_eq!(descriptor.version, AKITA_INSTANCE_DESCRIPTOR_VERSION);
     assert_eq!(
         &bytes[offset..offset + grinding_bytes.len()],
         grinding_bytes
@@ -386,4 +386,38 @@ fn ring_relation_mode_changes_plan_and_transcript_preamble_binding() {
         second_descriptor.canonical_bytes().unwrap(),
         "the mode must be bound before ring-switch alpha is sampled"
     );
+}
+
+#[test]
+fn raw_call_descriptor_roundtrip_binds_source_view_and_query_arity() {
+    use akita_params::{OpeningGroupLayout, PolynomialGroupLayout, SourceOpeningView};
+    let source = PolynomialGroupLayout::singleton(16);
+    let raw = OpeningClaimsLayout::from_opening_groups(vec![
+        OpeningGroupLayout::new(source, SourceOpeningView::OriginalRamPlanesV1).unwrap(),
+    ]).unwrap();
+    let call = CallSection::from_layout(&raw, BasisMode::Lagrange).unwrap();
+    assert_eq!(call.num_vars_per_commitment_group, vec![16]);
+    assert_eq!(call.point_num_vars_per_commitment_group, vec![21]);
+    let mut bytes = Vec::new();
+    call.serialize_uncompressed(&mut bytes).unwrap();
+    assert_eq!(bytes.len(), call.uncompressed_size());
+    assert_eq!(CallSection::deserialize_uncompressed_exact(&bytes, &()).unwrap(), call);
+    let decoded = CallSection::from_layout(
+        &OpeningClaimsLayout::from_groups(vec![source]).unwrap(), BasisMode::Lagrange,
+    ).unwrap();
+    assert_ne!(digest_serializable(&call).unwrap(), digest_serializable(&decoded).unwrap());
+    assert!(CallSection::from_layout(&raw, BasisMode::Monomial).is_err());
+    let mut changed = call.clone();
+    changed.point_num_vars_per_commitment_group[0] = 16;
+    assert!(changed.check().is_err());
+    let mut changed = call.clone();
+    changed.num_vars_per_commitment_group[0] = 21;
+    assert!(changed.check().is_err());
+    let mut changed = call.clone();
+    changed.source_views.clear();
+    assert!(changed.check().is_err());
+    // Fixed one-group wire prefix: counts/source/poly dimensions then point arity.
+    let view_offset = 6 * 0u32.uncompressed_size();
+    bytes[view_offset] = 255;
+    assert!(CallSection::deserialize_uncompressed_exact(&bytes, &()).is_err());
 }

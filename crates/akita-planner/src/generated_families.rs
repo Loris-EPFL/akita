@@ -9,6 +9,10 @@
 //! hook and artifact policy. It is behind the `catalog-gen` feature because
 //! that offline path is allowed to name `akita-config` presets. Normal
 //! runtime callers consume validated artifacts through `akita-schedules`.
+//!
+//! The compact full-ring inner family emits only its complete grouped root.
+//! Its frozen receiver and original-plane RAM inputs are not standalone scalar
+//! catalog producers; explicit scalar and producer sweeps are unsupported.
 
 use std::any::TypeId;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -21,6 +25,7 @@ use akita_params::sis::CommittedSourceContract;
 use akita_params::ScheduleLookupKey;
 use akita_params::{FoldSchedule, GroupCommitPhaseParams, PolynomialGroupLayout};
 
+use akita_config::full_ring::CompactInner;
 use akita_config::proof_optimized::{fp128, fp32, fp64};
 use akita_config::{policy_of, CommitmentConfig, RecursiveCommitmentConfig};
 
@@ -315,9 +320,9 @@ fn regen<Cfg: CommitmentConfig>(key: PolynomialGroupLayout) -> Result<FoldSchedu
 ///
 /// Generation cannot read the catalog it is producing, so this plans the row
 /// instead of selecting it. `ValidatedScheduleCatalog::resolve_key` is the runtime counterpart, and
-/// `every_grouped_artifact_precommit_has_a_shipped_scalar_producer` asserts the
-/// two agree on every shipped descriptor, including recursive adapter/base-family
-/// mappings.
+/// `every_legacy_grouped_artifact_precommit_has_a_shipped_scalar_producer`
+/// asserts the two agree on every legacy shipped descriptor, including recursive
+/// adapter/base-family mappings.
 fn planned_profile_without_precommitted_groups<Cfg: CommitmentConfig + 'static>(
     preplans: &GenerationPreplans,
     group: PolynomialGroupLayout,
@@ -349,6 +354,45 @@ fn no_grouped_requests(
     _preplans: &GenerationPreplans,
 ) -> Result<GroupedGenerationRequests, AkitaError> {
     Ok(Vec::new())
+}
+
+fn compact_inner_grouped_requests(
+    _preplans: &GenerationPreplans,
+) -> Result<GroupedGenerationRequests, AkitaError> {
+    let (key, contracts) = CompactInner::root_inputs()?;
+    if key.precommitteds.len() != contracts.len() {
+        return Err(AkitaError::InvalidSetup(
+            "compact inner root descriptors and source contracts differ in length".into(),
+        ));
+    }
+    let producers = key
+        .precommitteds
+        .into_iter()
+        .zip(contracts)
+        .map(|(descriptor, contract)| PrecommittedProducer::try_new(descriptor, contract))
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(vec![GroupedGenerationRequest::new(
+        key.final_group,
+        producers,
+    )])
+}
+
+fn unsupported_compact_inner_scalar(
+    _key: PolynomialGroupLayout,
+) -> Result<FoldSchedule, AkitaError> {
+    Err(AkitaError::InvalidInput(
+        "compact inner generation supports only its complete grouped root, not scalar requests"
+            .into(),
+    ))
+}
+
+fn unsupported_compact_inner_producer(
+    _preplans: &GenerationPreplans,
+    _group: PolynomialGroupLayout,
+) -> Result<PrecommittedProducer, AkitaError> {
+    Err(AkitaError::InvalidInput(
+        "compact inner generation has no standalone precommitted producer catalog".into(),
+    ))
 }
 
 fn fp128_onehot_grouped_requests(
@@ -736,6 +780,18 @@ pub const ALL_GENERATED_FAMILIES: &[GeneratedFamily] = &[
         no_grouped_requests
     ),
     family_row!(FP32_ONEHOT_KEYS, fp32::OneHot, fp32_onehot_grouped_requests),
+    GeneratedFamily {
+        family_name_fn: CompactInner::schedule_family_name,
+        scalar_keys: &[],
+        scalar_plan_source: TypeId::of::<CompactInner>,
+        regen: unsupported_compact_inner_scalar,
+        regen_group_batch: regen_group_batch::<CompactInner>,
+        grouped_requests: compact_inner_grouped_requests,
+        policy: family_policy::<CompactInner>,
+        source_contract: CompactInner::committed_source_contract,
+        ring_challenge_config: CompactInner::ring_challenge_config,
+        explicit_precommitted_group: unsupported_compact_inner_producer,
+    },
 ];
 
 #[cfg(test)]

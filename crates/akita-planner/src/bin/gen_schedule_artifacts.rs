@@ -481,6 +481,14 @@ fn materialized_snapshot_rows(
                             "balanced(bound={})",
                             contract.decomposition().log_commit_bound,
                         ),
+                        akita_params::sis::CommittedSourceClass::OriginalBalancedDigitPlanes => {
+                            write!(
+                                logical_key,
+                                "original-planes(base_bits={},field_bits={})",
+                                contract.decomposition().log_basis,
+                                contract.decomposition().field_bits(),
+                            )
+                        }
                     }
                     .map_err(|error| format!("write producer contract key: {error}"))?;
                 }

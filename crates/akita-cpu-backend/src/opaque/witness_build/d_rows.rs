@@ -21,6 +21,9 @@ pub(crate) enum RelationDRows<F: Field, const D: usize> {
     ReducedEvaluation {
         reduced: Vec<CyclotomicRing<F, D>>,
     },
+    ExactCoefficientRows {
+        reduced: Vec<CyclotomicRing<F, D>>,
+    },
 }
 
 /// Compute the private D-block rows `v = D * e_hat` and their relation quotients.
@@ -47,7 +50,7 @@ where
     )
     .entered();
     match relation_mode {
-        RingRelationMode::ReducedEvaluation => {
+        RingRelationMode::ReducedEvaluation | RingRelationMode::ExactCoefficientRows => {
             let rows = backend.digit_rows(
                 prepared,
                 d_row_len,
@@ -65,7 +68,11 @@ where
                     "D digit-row kernel output rank differs from the relation plan".into(),
                 ));
             }
-            return Ok(RelationDRows::ReducedEvaluation { reduced });
+            return Ok(if relation_mode == RingRelationMode::ExactCoefficientRows {
+                RelationDRows::ExactCoefficientRows { reduced }
+            } else {
+                RelationDRows::ReducedEvaluation { reduced }
+            });
         }
         RingRelationMode::QuotientLift => {}
     }

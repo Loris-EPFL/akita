@@ -91,7 +91,14 @@ pub struct SubringCoefficientPackingPlan<'a, E: Field> {
 }
 
 impl<E: Field> SubringCoefficientPackingPlan<'_, E> {
-    /// Validate the plan at a source kernel boundary.
+    /// Decoded kernels must not reinterpret a registered raw-plane recipe.
+    pub fn validate_decoded(&self) -> Result<(), AkitaError> {
+        if self.point.source_view() != akita_params::SourceOpeningView::Decoded {
+            return Err(AkitaError::InvalidInput("decoded kernel rejects original RAM plane recipe".into()));
+        }
+        Ok(())
+    }
+    /// Validate source geometry independently of the authorized query arity.
     pub fn validate<const D: usize>(&self, source_num_vars: usize) -> Result<(), AkitaError> {
         if self.point.geometry().a_ring_dimension() != D
             || self.point.source_num_vars() != source_num_vars
@@ -322,7 +329,7 @@ pub struct CommitInnerPlan {
 
 impl CommitInnerPlan {
     /// Build inner-commit parameters from a frozen standalone precommit profile.
-    pub(crate) fn from_profile(profile: &akita_params::GroupCommitPhaseParams) -> Self {
+    pub fn from_profile(profile: &akita_params::GroupCommitPhaseParams) -> Self {
         Self {
             ring_dimension: profile.inner.matrix.ring_dimension(),
             num_live_blocks: profile.blocks.live_blocks,

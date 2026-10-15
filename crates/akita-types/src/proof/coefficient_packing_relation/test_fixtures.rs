@@ -248,6 +248,7 @@ pub fn coefficient_packing_multigroup_fixture() -> CoefficientPackingMultigroupF
             setup_natural_len: None,
             profile: GroupCommitPhaseParams::from_params_unchecked_for_test(pre_layout, &frozen),
             opening: GroupOpeningPlan {
+                source_view: akita_params::SourceOpeningView::Decoded,
                 opening_method: OpeningMethod::SubringCoefficientPacking {
                     challenge_subring_dimension: 64,
                 },

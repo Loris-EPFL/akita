@@ -122,6 +122,7 @@ impl<'a, E: Field> Stage2OpeningSemantics<'a, E> {
         match &self.0 {
             OpeningFamily::EvaluationTrace(trace) => trace.opening_claim,
             OpeningFamily::SubringCoefficientPacking(packing) => packing.opening_claim,
+            OpeningFamily::FullRingScalarExtension(never) => match *never {},
         }
     }
 }
@@ -278,6 +279,7 @@ where
                         .weight_at_point(challenges));
                 (relation_weight?, coefficient_packing_weight?)
             }
+            OpeningFamily::FullRingScalarExtension(never) => match *never {},
         };
         let compression_oracle = {
             let _span = tracing::info_span!(
@@ -304,6 +306,7 @@ where
                 trace.row_weight * w_eval * trace.trace.evaluate_at_point(challenges)?
             }
             OpeningFamily::SubringCoefficientPacking(_) => E::zero(),
+            OpeningFamily::FullRingScalarExtension(never) => match *never {},
         };
         let physical_l2_oracle = if self.physical_l2_families.is_empty() {
             E::zero()

@@ -89,7 +89,8 @@ pub(crate) fn root_inner_basis_source(
 ) -> InnerBasisSource {
     match source.class() {
         akita_params::sis::CommittedSourceClass::UnitOneHot { .. } => InnerBasisSource::UnitOneHot,
-        akita_params::sis::CommittedSourceClass::BalancedSignedDigit => {
+        akita_params::sis::CommittedSourceClass::BalancedSignedDigit
+        | akita_params::sis::CommittedSourceClass::OriginalBalancedDigitPlanes => {
             InnerBasisSource::RawCoefficients {
                 log_bound: source.decomposition().log_commit_bound,
             }

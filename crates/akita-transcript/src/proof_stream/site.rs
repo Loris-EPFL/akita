@@ -1,11 +1,10 @@
 use super::ProtocolSiteId;
 
 impl ProtocolSiteId {
-    /// Decode the fixed canonical diagnostic layout produced by [`Self::to_bytes`].
+    /// Decode the fixed canonical owner layout produced by [`Self::to_bytes`].
     ///
-    /// Protocol site identifiers come from validated public state, not proof
-    /// input. This inverse supports typed diagnostics and test coverage; it is
-    /// not part of proof parsing.
+    /// Sites come from validated public schedules. Decoding this fixed layout
+    /// does not admit a site: the installed grammar checks every occurrence.
     #[must_use]
     pub const fn from_bytes(encoded: [u8; 32]) -> Self {
         Self {

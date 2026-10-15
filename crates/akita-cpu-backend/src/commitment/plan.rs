@@ -167,6 +167,22 @@ impl CommitmentExecutionPlan {
         )
     }
 
+    /// Selected canonical full-ring producer. The B/F commitment arithmetic is
+    /// unchanged; exact rows retain inputs, not polynomial quotient images.
+    pub(crate) fn for_full_ring_root(profile: &GroupCommitPhaseParams) -> Result<Self, AkitaError> {
+        if profile.inner.matrix.ring_dimension() != 128 {
+            return Err(AkitaError::InvalidInput(
+                "full-ring root requires native128".into(),
+            ));
+        }
+        Self::from_profile(
+            0,
+            profile,
+            CommitmentPayloadMode::Compressed,
+            RingRelationMode::ExactCoefficientRows,
+        )
+    }
+
     /// Build the material-consumption plan for one group in a fold relation.
     ///
     /// Unlike [`Self::for_root`], this preserves the consuming level's payload

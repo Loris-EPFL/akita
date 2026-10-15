@@ -114,6 +114,9 @@ fn into_source<F: Field>(
         CompressionRelationOutput::ReducedEvaluation => {
             PortableCompressionState::reduced_evaluation(output.witness)?
         }
+        CompressionRelationOutput::ExactCoefficientRows => {
+            PortableCompressionState::exact_coefficient_rows(output.witness)?
+        }
     };
     Ok(CompressionSourceWitness {
         id: output.id,
@@ -189,4 +192,51 @@ where
         },
         report,
     ))
+}
+
+/// Retain every original F path and compute the D/H path with its independently
+/// installed roles rather than a shared setup prefix.
+pub(crate) fn materialize_full_ring_compression_witness<F, E>(
+    backend: &crate::opaque::CpuBackend<F, E>,
+    roles: &[akita_types::FullRingMatrixRole],
+    layout: &RelationRhsLayout,
+    mut outer_sources: Vec<CompressionSourceWitness<F>>,
+    opening_rows: &RingVec<F>,
+) -> Result<CompressionWitnessMaterialization<F>, AkitaError>
+where
+    F: Field + CanonicalEncoding + akita_serialization::AkitaSerialize,
+{
+    if outer_sources.len() != layout.groups.len() {
+        return Err(AkitaError::InvalidInput(
+            "complete original F source set missing".into(),
+        ));
+    }
+    for (index, source) in outer_sources.iter().enumerate() {
+        let (group_index, plan) = layout.group_compression_plan(index)?;
+        if source.id != (CompressionSourceId::Outer { group_index })
+            || source.terminal.plan() != plan
+        {
+            return Err(AkitaError::InvalidInput(
+                "original F path order/geometry mismatch".into(),
+            ));
+        }
+        source
+            .material
+            .validate(plan, RingRelationMode::ExactCoefficientRows)?;
+    }
+    let plan = layout.opening_compression_plan()?;
+    let output = crate::opaque::compression::execute_full_ring_compression(
+        backend,
+        roles,
+        CompressionExecutionInput {
+            id: CompressionSourceId::Opening,
+            plan: plan.clone(),
+            coefficients: opening_rows.coeffs().to_vec(),
+            relation_mode: RingRelationMode::ExactCoefficientRows,
+        },
+    )?;
+    outer_sources.push(into_source(output)?);
+    Ok(CompressionWitnessMaterialization {
+        sources: outer_sources,
+    })
 }

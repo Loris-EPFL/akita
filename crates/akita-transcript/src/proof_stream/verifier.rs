@@ -1,89 +1,53 @@
-use crate::TranscriptSponge;
+use super::indexed::{Core, IndexedError, InstalledContext};
 use akita_error::AkitaError;
-use spongefish::{Decoding, Encoding, NargDeserialize, VerifierState};
+use spongefish::{Encoding, NargDeserialize};
 
-/// Akita's fail-closed Spongefish verifier state.
-///
-/// Receipt failures poison this owner permanently. Keeping the underlying
-/// Spongefish state private prevents protocol callers from consuming malformed
-/// input and later obtaining a successful EOF result by ignoring the error.
+/// Fail-closed ordinary v8 verifier owner. The proof cursor and hash prefix are private.
 pub struct VerifierChannel<'proof> {
-    inner: VerifierState<'proof, TranscriptSponge>,
-    invalid: bool,
+    pub(super) core: Core,
+    proof: &'proof [u8],
 }
-
 impl<'proof> VerifierChannel<'proof> {
-    pub(super) const fn new(inner: VerifierState<'proof, TranscriptSponge>) -> Self {
-        Self {
-            inner,
-            invalid: false,
-        }
+    pub(super) fn new(context: &InstalledContext, proof: &'proof [u8]) -> Result<Self, IndexedError> {
+        let core = Core::from_context(context);
+        if proof.len() as u64 > core.proof_limit() { return Err(IndexedError::Budget); }
+        Ok(Self { core, proof })
     }
-
-    /// Read and absorb one prover message, recording every decoding failure.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`AkitaError::InvalidProof`] when an earlier receipt failed or
-    /// the next message is missing or noncanonical.
-    pub fn prover_message<T>(&mut self) -> Result<T, AkitaError>
-    where
-        T: Encoding<[u8]> + NargDeserialize,
-    {
-        if self.invalid {
-            return Err(AkitaError::InvalidProof);
-        }
-        let result = self
-            .inner
-            .prover_message::<T>()
-            .map_err(|_| AkitaError::InvalidProof);
-        self.invalid |= result.is_err();
-        result
+    /// Read one canonical atom within the installed current logical event.
+    pub fn prover_message<T: Encoding<[u8]> + NargDeserialize>(&mut self) -> Result<T, AkitaError> {
+        self.core.ensure_valid()?;
+        let bound = self.core.proof_read_limit()?;
+        let original = &self.proof[..self.proof.len().min(bound)];
+        let mut remaining = original;
+        let value = match T::deserialize_from_narg(&mut remaining) {
+            Ok(value) => value,
+            Err(_) => return self.core.fail(IndexedError::Decode).map_err(Into::into),
+        };
+        let Some(consumed) = original.len().checked_sub(remaining.len()) else {
+            return self.core.fail(IndexedError::Decode).map_err(Into::into);
+        };
+        let Some(bytes) = original.get(..consumed) else { return self.core.fail(IndexedError::Decode).map_err(Into::into); };
+        // Transport codecs must accept exactly their unique canonical encoding.
+        if value.encode().as_ref() != bytes { return self.core.fail(IndexedError::Decode).map_err(Into::into); }
+        self.core.message_bytes(bytes, false)?;
+        self.proof = &self.proof[consumed..];
+        Ok(value)
     }
-
-    /// Absorb one public message without consuming proof bytes.
-    pub fn public_message<T: Encoding<[u8]> + ?Sized>(&mut self, message: &T) {
-        if self.invalid {
-            return;
-        }
-        self.inner.public_message(message);
+    pub(super) fn receive_raw(&mut self, len: usize) -> Result<Vec<u8>, IndexedError> {
+        self.core.ensure_valid()?;
+        let Some((bytes, remaining)) = self.proof.split_at_checked(len) else { return self.core.fail(IndexedError::Decode); };
+        self.core.message_bytes(bytes, false)?;
+        let mut output = Vec::new();
+        if output.try_reserve_exact(len).is_err() { return self.core.fail(IndexedError::Budget); }
+        output.extend_from_slice(bytes);
+        self.proof = remaining;
+        Ok(output)
     }
-
-    /// Draw one verifier message from the proof channel.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`AkitaError::InvalidProof`] when an earlier receipt failed.
-    pub fn verifier_message<T: Decoding<[u8]>>(&mut self) -> Result<T, AkitaError> {
-        if self.invalid {
-            return Err(AkitaError::InvalidProof);
-        }
-        Ok(self.inner.verifier_message())
-    }
-
-    /// Finish only if no earlier receipt failed and no proof bytes remain.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`AkitaError::InvalidProof`] when an earlier receipt failed or
-    /// proof bytes remain.
-    pub fn check_eof(self) -> Result<(), AkitaError> {
-        if self.invalid {
-            return Err(AkitaError::InvalidProof);
-        }
-        self.inner.check_eof().map_err(|_| AkitaError::InvalidProof)
-    }
-
-    pub(super) fn sponge_mut(&mut self) -> &mut TranscriptSponge {
-        &mut self.inner.duplex_sponge_state
-    }
-
-    pub(super) const fn is_invalid(&self) -> bool {
-        self.invalid
-    }
-
-    /// Permanently reject this transcript after a semantic protocol failure.
-    pub fn invalidate(&mut self) {
-        self.invalid = true;
+    /// Accept only after the installed event/request grammar and exact proof EOF.
+    pub fn check_eof(self) -> Result<(), AkitaError> { self.finish().map_err(Into::into) }
+    pub fn finish(self) -> Result<(), IndexedError> {
+        self.core.finish()?;
+        if !self.proof.is_empty() { return Err(IndexedError::TrailingProof); }
+        Ok(())
     }
 }

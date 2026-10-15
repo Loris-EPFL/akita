@@ -55,14 +55,19 @@ mod tests {
             ChallengeFieldOrder::from_full_capacity(128).unwrap(),
         )
         .unwrap();
-        let state = new_prover_channel(b"native-stage2", b"fixture").unwrap();
+        let context = crate::indexed_test_support::context(b"native-stage2", vec![
+            crate::indexed_test_support::extension_message::<F, E>(
+                witness_evaluation_site(7), akita_transcript::ProtocolMessageKind::ProofAtoms, 1,
+            ),
+        ]);
+        let state = new_prover_channel(&context).unwrap();
         let mut prover = ProverGrinding::new(state, &plan);
         let evaluation = E::from_u64(42);
         stage2_w_eval::<F, E, _>(&mut prover, 7, evaluation).unwrap();
         let proof = prover.finish().unwrap();
         assert_eq!(proof.len(), E::DEGREE * F::NUM_BYTES);
 
-        let state = new_verifier_channel(b"native-stage2", b"fixture", &proof).unwrap();
+        let state = new_verifier_channel(&context, &proof).unwrap();
         let mut verifier = VerifierGrinding::new(state, &plan);
         assert_eq!(
             stage2_w_eval::<F, E, _>(&mut verifier, 7, E::zero()).unwrap(),

@@ -288,6 +288,11 @@ impl RecursiveCandidateContext<'_, '_> {
         }
         let mut candidates = Vec::new();
         for outer_slice_count in akita_params::CommitmentSliceCount::ALL {
+            if request.opening.method().is_full_ring_scalar_extension()
+                && outer_slice_count != akita_params::CommitmentSliceCount::ONE
+            {
+                continue;
+            }
             if request
                 .guide
                 .is_some_and(|guide| outer_slice_count != guide.outer_slice_count)
@@ -357,6 +362,7 @@ impl RecursiveCandidateContext<'_, '_> {
                             ),
                         },
                         opening: akita_params::GroupOpeningPlan {
+                            source_view: akita_params::SourceOpeningView::Decoded,
                             opening_method: request.opening.method(),
                             fold_challenge_config: request.opening.challenge_config(),
                             log_basis_open: request.log_basis_open,
@@ -725,7 +731,10 @@ fn derive_best_fold_candidates(
             }
         }
     }
-    if !request.opening.is_coefficient_packing() {
+    if matches!(
+        request.opening.method(),
+        akita_params::OpeningMethod::EvaluationTrace
+    ) {
         for best in &best_modeled {
             append_selective_l2_candidates(
                 &mut candidates,
@@ -759,14 +768,19 @@ pub(crate) fn derive_terminal_candidates(
         source_moment: request.source_moment,
         successor_policy: SuccessorPolicy::AllowNonContracting,
     };
+    let relation_domain = if request.opening.method().is_full_ring_scalar_extension() {
+        RelationSearchDomain::ExactCoefficientRows
+    } else {
+        RelationSearchDomain::QuotientOnly
+    };
     let retain_setup_frontier = matches!(
         request.policy.selection_policy,
         crate::SelectionPolicyId::MinPaddedSetupEnvelopeThenFirstDirectThenExactProofAndWorkV6
     );
     let modeled = if retain_setup_frontier {
-        all_linf_candidates_for(&modeled_context, RelationSearchDomain::QuotientOnly)?
+        all_linf_candidates_for(&modeled_context, relation_domain)?
     } else {
-        best_linf_candidates_for(&modeled_context, RelationSearchDomain::QuotientOnly)?
+        best_linf_candidates_for(&modeled_context, relation_domain)?
     };
     let mut candidates = modeled
         .iter()
@@ -778,9 +792,9 @@ pub(crate) fn derive_terminal_candidates(
             ..modeled_context
         };
         let universal = if retain_setup_frontier {
-            all_linf_candidates_for(&universal_context, RelationSearchDomain::QuotientOnly)?
+            all_linf_candidates_for(&universal_context, relation_domain)?
         } else {
-            best_linf_candidates_for(&universal_context, RelationSearchDomain::QuotientOnly)?
+            best_linf_candidates_for(&universal_context, relation_domain)?
         };
         for (_, candidate, next) in universal {
             let universal = (candidate, next);
@@ -790,6 +804,9 @@ pub(crate) fn derive_terminal_candidates(
         }
     }
     for best in &modeled {
+        if request.opening.method().is_full_ring_scalar_extension() {
+            break;
+        }
         append_selective_l2_candidates(
             &mut candidates,
             Some(best),

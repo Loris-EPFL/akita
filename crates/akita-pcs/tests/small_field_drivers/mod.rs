@@ -109,7 +109,7 @@ where
     let selection = prover_data.selection();
 
     let proof = prove_matching_byte_model(scheme.schedules(), selection, || {
-        scheme.batched_prove(&setup, prover_data, &stack, label, BasisMode::Lagrange)
+        { let native_setup = &setup; let native_opening = prover_data; let native_session = label; let native_basis = BasisMode::Lagrange; akita_pcs::prepare_native_prover_context(native_setup.expanded.descriptor(), scheme.schedules(), &native_opening, native_session, &[], native_basis, 0).and_then(|native_context| scheme.batched_prove(native_setup, native_opening, &stack, native_session, native_context.registry(), native_context.augmentation(), native_basis)) }
     });
 
     let verify_claims = OpeningClaims::from_groups(vec![PolynomialGroupClaims::new(
@@ -122,12 +122,7 @@ where
     scheme
         .verifier(verifier_setup.clone())
         .and_then(|verifier| {
-            verifier.batched_verify(
-                &proof,
-                label,
-                GroupBatchStatement::new(selection, verify_claims).expect("statement"),
-                BasisMode::Lagrange,
-            )
+            { let native_statement = GroupBatchStatement::new(selection, verify_claims).expect("statement"); let native_session = label; let native_basis = BasisMode::Lagrange; akita_pcs::prepare_native_proof_context(verifier.setup().expanded().descriptor(), verifier.schedules(), &native_statement, native_session, &[], native_basis, 0).and_then(|native_context| verifier.batched_verify(&proof, native_session, native_context.registry(), native_context.augmentation(), native_statement, native_basis)) }
         })
         .unwrap_or_else(|e| panic!("{what} nv={nv}: {e:?}"));
 
@@ -207,12 +202,7 @@ pub(super) fn two_group_verify_roundtrip<Cfg>(
     scheme
         .verifier(verifier_setup.clone())
         .and_then(|verifier| {
-            verifier.batched_verify(
-                proof,
-                label,
-                GroupBatchStatement::new(selection, verify_claims).expect("statement"),
-                BasisMode::Lagrange,
-            )
+            { let native_statement = GroupBatchStatement::new(selection, verify_claims).expect("statement"); let native_session = label; let native_basis = BasisMode::Lagrange; akita_pcs::prepare_native_proof_context(verifier.setup().expanded().descriptor(), verifier.schedules(), &native_statement, native_session, &[], native_basis, 0).and_then(|native_context| verifier.batched_verify(proof, native_session, native_context.registry(), native_context.augmentation(), native_statement, native_basis)) }
         })
         .unwrap_or_else(|e| panic!("{what}: {e:?}"));
 }

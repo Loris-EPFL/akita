@@ -51,9 +51,16 @@ pub struct NonterminalLevelLayout {
     stage2_sumcheck: akita_sumcheck::SumcheckShape,
     next_outer_payload_coeffs: usize,
     next_witness_evaluations: usize,
+    full_coefficient_rounds: Option<usize>,
 }
 
 impl NonterminalLevelLayout {
+    /// Selected strong grammar: two degree-five full coefficient stages and
+    /// one degree-three fused stage. `None` denotes the legacy Eq-factored wire.
+    pub const fn full_coefficient_rounds(&self) -> Option<usize> {
+        self.full_coefficient_rounds
+    }
+
     /// Fixed base-field atom count in the opening payload.
     #[must_use]
     pub const fn opening_payload_coeffs(&self) -> usize {
@@ -94,6 +101,22 @@ impl NonterminalLevelLayout {
         let opening_payload_bytes =
             akita_error::checked::product([self.opening_payload_coeffs, self.base_field_bytes])
                 .ok_or_else(|| AkitaError::InvalidSetup("opening payload size overflow".into()))?;
+        if let Some(rounds) = self.full_coefficient_rounds {
+            let strong_values = crate::FullRingRangePlan::full_coefficient_count(rounds)?
+                .checked_add(crate::FullRingRangePlan::ENDPOINT_VALUES)
+                .and_then(|n| n.checked_mul(self.challenge_field_bytes))
+                .ok_or_else(|| {
+                    AkitaError::InvalidSetup("full-ring strong payload overflow".into())
+                })?;
+            return self
+                .next_outer_payload_coeffs
+                .checked_mul(self.base_field_bytes)
+                .and_then(|n| n.checked_add(opening_payload_bytes))
+                .and_then(|n| n.checked_add(strong_values))
+                .ok_or_else(|| {
+                    AkitaError::InvalidSetup("full-ring level payload overflow".into())
+                });
+        }
         let stage1_bytes = stage1_proof_bytes(self.stage1_shape, self.challenge_field_bytes)?;
         let stage2_bytes = sumcheck_bytes(
             self.stage2_sumcheck.num_rounds(),
@@ -165,6 +188,17 @@ pub fn nonterminal_level_layout(
     let base_field_bytes = field_bytes(base_field_bits);
     let challenge_field_bytes = field_bytes(challenge_field_bits);
     let rounds = relation_geometry.relation_point_variable_count();
+    let full_coefficient_rounds = if lp.opening_method().is_full_ring_scalar_extension() {
+        lp.validate_full_ring_execution(2)?;
+        if base_field_bits != 128 || challenge_field_bits != 256 {
+            return Err(AkitaError::InvalidSetup(
+                "full-ring scalar extension wire requires K128/E256".into(),
+            ));
+        }
+        Some(rounds)
+    } else {
+        None
+    };
     if base_field_bits != lp.open().matrix.sis_modulus_profile().field_bits() {
         return Err(AkitaError::InvalidSetup(
             "opening payload profile disagrees with the base field width".into(),
@@ -191,6 +225,7 @@ pub fn nonterminal_level_layout(
         stage2_sumcheck: akita_sumcheck::SumcheckShape::new(rounds, 3)?,
         next_outer_payload_coeffs,
         next_witness_evaluations: 1,
+        full_coefficient_rounds,
     })
 }
 

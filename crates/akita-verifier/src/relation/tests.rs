@@ -434,17 +434,20 @@ fn malformed_relation_property_matrix_rejects_without_panicking() {
     const POINT: u8 = 1 << 3;
     const SETUP: u8 = 1 << 4;
 
-    for mode in [
-        RingRelationMode::QuotientLift,
-        RingRelationMode::ReducedEvaluation,
+    for (mode, mismatched_mode) in [
+        (
+            RingRelationMode::QuotientLift,
+            RingRelationMode::ReducedEvaluation,
+        ),
+        (
+            RingRelationMode::ReducedEvaluation,
+            RingRelationMode::QuotientLift,
+        ),
     ] {
         for mutation_mask in 1..(1 << 5) {
             let mut fixture = mixed_replay_fixture(mode);
             if mutation_mask & MODE != 0 {
-                fixture.lp.ring_relation_mode = match mode {
-                    RingRelationMode::QuotientLift => RingRelationMode::ReducedEvaluation,
-                    RingRelationMode::ReducedEvaluation => RingRelationMode::QuotientLift,
-                };
+                fixture.lp.ring_relation_mode = mismatched_mode;
             }
             if mutation_mask & DIMENSION != 0 {
                 let outer = fixture.lp.outer().matrix;

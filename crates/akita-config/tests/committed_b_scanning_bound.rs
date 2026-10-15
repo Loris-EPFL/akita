@@ -158,7 +158,8 @@ fn round_trip_corrected_schedule<Cfg: CommitmentConfig>(num_vars: usize, rank: u
     let catalog = TrustedScheduleCatalog::<Cfg>::new(raw).unwrap();
     let bytes = catalog.to_artifact_bytes().unwrap();
     let loaded = TrustedScheduleCatalog::<Cfg>::from_artifact_bytes(&bytes).unwrap();
-    let row = loaded.resolve_profiles(&profiles).unwrap();
+    let views = vec![akita_params::SourceOpeningView::Decoded; profiles.precommitteds.len() + 1];
+    let row = loaded.resolve_profiles(&profiles, &views).unwrap();
     assert_eq!(row.schedule(), &schedule);
     let occurrences = row.schedule().sis_occurrences().unwrap();
     let b = occurrences

@@ -45,12 +45,7 @@ fn reduced_relation_catalog_roundtrip_reaches_production_verifier() {
             scheme
                 .verifier(verifier_setup.clone())
                 .and_then(|verifier| {
-                    verifier.batched_verify(
-                        &proof,
-                        b"test/prove",
-                        verifier_claims(&scheme, &opening_point, &openings, &commitments[0]),
-                        BasisMode::Lagrange,
-                    )
+                    { let native_statement = verifier_claims(&scheme, &opening_point, &openings, &commitments[0]); let native_session = b"test/prove"; let native_basis = BasisMode::Lagrange; crate::prepare_native_proof_context(verifier.setup().expanded().descriptor(), verifier.schedules(), &native_statement, native_session, &[], native_basis, 0).and_then(|native_context| verifier.batched_verify(&proof, native_session, native_context.registry(), native_context.augmentation(), native_statement, native_basis)) }
                 })
                 .expect("production verifier must replay the reduced-relation suffix");
 
@@ -59,12 +54,7 @@ fn reduced_relation_catalog_roundtrip_reaches_production_verifier() {
             scheme
                 .verifier(verifier_setup.clone())
                 .and_then(|verifier| {
-                    verifier.batched_verify(
-                        &proof,
-                        b"test/prove",
-                        verifier_claims(&scheme, &opening_point, &openings, &commitments[0]),
-                        BasisMode::Lagrange,
-                    )
+                    { let native_statement = verifier_claims(&scheme, &opening_point, &openings, &commitments[0]); let native_session = b"test/prove"; let native_basis = BasisMode::Lagrange; crate::prepare_native_proof_context(verifier.setup().expanded().descriptor(), verifier.schedules(), &native_statement, native_session, &[], native_basis, 0).and_then(|native_context| verifier.batched_verify(&proof, native_session, native_context.registry(), native_context.augmentation(), native_statement, native_basis)) }
                 })
                 .expect_err("production verifier must reject a tampered reduced stage2 proof");
         })
@@ -106,20 +96,13 @@ fn verify_rejects_wrong_opening() {
 
     let commitments = [commitment];
 
-    let proof = scheme
-        .batched_prove(
-            &setup,
-            prover_claims(
-                &scheme,
-                &opening_point[..],
-                &[opening],
-                &commitments[0],
-                hint,
-            ),
-            &stack,
-            b"test/prove",
-            BasisMode::Lagrange,
-        )
+    let proof = { let native_setup = &setup; let native_opening = prover_claims(
+        &scheme,
+        &opening_point[..],
+        &[opening],
+        &commitments[0],
+        hint,
+    ); let native_session = b"test/prove"; let native_basis = BasisMode::Lagrange; crate::prepare_native_prover_context(native_setup.expanded.descriptor(), scheme.schedules(), &native_opening, native_session, &[], native_basis, 0).and_then(|native_context| scheme.batched_prove(native_setup, native_opening, &stack, native_session, native_context.registry(), native_context.augmentation(), native_basis)) }
         .unwrap();
 
     let wrong_opening = opening + F::one();
@@ -127,17 +110,12 @@ fn verify_rejects_wrong_opening() {
     let result = scheme
         .verifier(verifier_setup.clone())
         .and_then(|verifier| {
-            verifier.batched_verify(
-                &proof,
-                b"test/prove",
-                verifier_claims(
-                    &scheme,
-                    &opening_point[..],
-                    &wrong_openings[..],
-                    &commitments[0],
-                ),
-                BasisMode::Lagrange,
-            )
+            { let native_statement = verifier_claims(
+                &scheme,
+                &opening_point[..],
+                &wrong_openings[..],
+                &commitments[0],
+            ); let native_session = b"test/prove"; let native_basis = BasisMode::Lagrange; crate::prepare_native_proof_context(verifier.setup().expanded().descriptor(), verifier.schedules(), &native_statement, native_session, &[], native_basis, 0).and_then(|native_context| verifier.batched_verify(&proof, native_session, native_context.registry(), native_context.augmentation(), native_statement, native_basis)) }
         });
 
     assert!(
@@ -183,60 +161,42 @@ fn spongefish_roundtrip_and_statement_binding_inner() {
         .iter()
         .zip(&weights)
         .fold(F::zero(), |sum, (&value, &weight)| sum + value * weight);
-    let proof = scheme
-        .batched_prove(
-            &setup,
-            prover_claims(
-                &scheme,
-                &opening_point,
-                &[opening],
-                &commitment,
-                prover_state,
-            ),
-            &stack,
-            b"test/prove",
-            BasisMode::Lagrange,
-        )
+    let proof = { let native_setup = &setup; let native_opening = prover_claims(
+        &scheme,
+        &opening_point,
+        &[opening],
+        &commitment,
+        prover_state,
+    ); let native_session = b"test/prove"; let native_basis = BasisMode::Lagrange; crate::prepare_native_prover_context(native_setup.expanded.descriptor(), scheme.schedules(), &native_opening, native_session, &[], native_basis, 0).and_then(|native_context| scheme.batched_prove(native_setup, native_opening, &stack, native_session, native_context.registry(), native_context.augmentation(), native_basis)) }
         .expect("native proof");
     scheme
         .verifier(verifier_setup.clone())
         .and_then(|verifier| {
-            verifier.batched_verify(
-                &proof,
-                b"test/prove",
-                verifier_claims(&scheme, &opening_point, &[opening], &commitment),
-                BasisMode::Lagrange,
-            )
+            { let native_statement = verifier_claims(&scheme, &opening_point, &[opening], &commitment); let native_session = b"test/prove"; let native_basis = BasisMode::Lagrange; crate::prepare_native_proof_context(verifier.setup().expanded().descriptor(), verifier.schedules(), &native_statement, native_session, &[], native_basis, 0).and_then(|native_context| verifier.batched_verify(&proof, native_session, native_context.registry(), native_context.augmentation(), native_statement, native_basis)) }
         })
         .expect("native verification");
     scheme
         .verifier(verifier_setup.clone())
         .and_then(|verifier| {
-            verifier.batched_verify(
-                &proof,
-                b"test/prove",
-                verifier_claims(&scheme, &opening_point, &[opening + F::one()], &commitment),
-                BasisMode::Lagrange,
-            )
+            { let native_statement = verifier_claims(&scheme, &opening_point, &[opening + F::one()], &commitment); let native_session = b"test/prove"; let native_basis = BasisMode::Lagrange; crate::prepare_native_proof_context(verifier.setup().expanded().descriptor(), verifier.schedules(), &native_statement, native_session, &[], native_basis, 0).and_then(|native_context| verifier.batched_verify(&proof, native_session, native_context.registry(), native_context.augmentation(), native_statement, native_basis)) }
         })
         .expect_err("native verification must bind the claimed opening");
     scheme
         .verifier(verifier_setup.clone())
         .and_then(|verifier| {
-            verifier.batched_verify(
-                &proof,
-                b"test/different-session",
-                verifier_claims(&scheme, &opening_point, &[opening], &commitment),
-                BasisMode::Lagrange,
-            )
+            { let native_statement = verifier_claims(&scheme, &opening_point, &[opening], &commitment); let native_session = b"test/different-session"; let native_basis = BasisMode::Lagrange; crate::prepare_native_proof_context(verifier.setup().expanded().descriptor(), verifier.schedules(), &native_statement, native_session, &[], native_basis, 0).and_then(|native_context| verifier.batched_verify(&proof, native_session, native_context.registry(), native_context.augmentation(), native_statement, native_basis)) }
         })
         .expect_err("native verification must bind the session");
     let error = scheme
         .verifier(verifier_setup.clone())
         .and_then(|verifier| {
+            let expected = verifier_claims(&scheme, &opening_point, &[opening], &commitment);
+            let context = crate::prepare_native_proof_context(
+                verifier.setup().expanded().descriptor(), verifier.schedules(), &expected,
+                b"test/prove", &[], BasisMode::Lagrange, 0,
+            )?;
             verifier.batched_verify(
-                &proof,
-                b"test/prove",
+                &proof, b"test/prove", context.registry(), context.augmentation(),
                 verifier_claims(&scheme, &opening_point, &[opening, opening], &commitment),
                 BasisMode::Lagrange,
             )
@@ -254,9 +214,13 @@ fn spongefish_roundtrip_and_statement_binding_inner() {
     let error = scheme
         .verifier(verifier_setup.clone())
         .and_then(|verifier| {
+            let expected = verifier_claims(&scheme, &opening_point, &[opening], &commitment);
+            let context = crate::prepare_native_proof_context(
+                verifier.setup().expanded().descriptor(), verifier.schedules(), &expected,
+                b"test/prove", &[], BasisMode::Lagrange, 0,
+            )?;
             verifier.batched_verify(
-                &[],
-                b"test/prove",
+                &[], b"test/prove", context.registry(), context.augmentation(),
                 verifier_claims(&scheme, short_point, &[opening], &commitment),
                 BasisMode::Lagrange,
             )
@@ -274,12 +238,7 @@ fn spongefish_roundtrip_and_statement_binding_inner() {
     scheme
         .verifier(verifier_setup.clone())
         .and_then(|verifier| {
-            verifier.batched_verify(
-                &truncated,
-                b"test/prove",
-                verifier_claims(&scheme, &opening_point, &[opening], &commitment),
-                BasisMode::Lagrange,
-            )
+            { let native_statement = verifier_claims(&scheme, &opening_point, &[opening], &commitment); let native_session = b"test/prove"; let native_basis = BasisMode::Lagrange; crate::prepare_native_proof_context(verifier.setup().expanded().descriptor(), verifier.schedules(), &native_statement, native_session, &[], native_basis, 0).and_then(|native_context| verifier.batched_verify(&truncated, native_session, native_context.registry(), native_context.augmentation(), native_statement, native_basis)) }
         })
         .expect_err("truncated native proof must reject");
     let mut trailing = proof.clone();
@@ -287,12 +246,7 @@ fn spongefish_roundtrip_and_statement_binding_inner() {
     scheme
         .verifier(verifier_setup.clone())
         .and_then(|verifier| {
-            verifier.batched_verify(
-                &trailing,
-                b"test/prove",
-                verifier_claims(&scheme, &opening_point, &[opening], &commitment),
-                BasisMode::Lagrange,
-            )
+            { let native_statement = verifier_claims(&scheme, &opening_point, &[opening], &commitment); let native_session = b"test/prove"; let native_basis = BasisMode::Lagrange; crate::prepare_native_proof_context(verifier.setup().expanded().descriptor(), verifier.schedules(), &native_statement, native_session, &[], native_basis, 0).and_then(|native_context| verifier.batched_verify(&trailing, native_session, native_context.registry(), native_context.augmentation(), native_statement, native_basis)) }
         })
         .expect_err("trailing native proof bytes must reject");
     let mut mutated = proof;
@@ -302,12 +256,7 @@ fn spongefish_roundtrip_and_statement_binding_inner() {
         scheme
             .verifier(verifier_setup.clone())
             .and_then(|verifier| {
-                verifier.batched_verify(
-                    &mutated,
-                    b"test/prove",
-                    verifier_claims(&scheme, &opening_point, &[opening], &commitment),
-                    BasisMode::Lagrange,
-                )
+                { let native_statement = verifier_claims(&scheme, &opening_point, &[opening], &commitment); let native_session = b"test/prove"; let native_basis = BasisMode::Lagrange; crate::prepare_native_proof_context(verifier.setup().expanded().descriptor(), verifier.schedules(), &native_statement, native_session, &[], native_basis, 0).and_then(|native_context| verifier.batched_verify(&mutated, native_session, native_context.registry(), native_context.augmentation(), native_statement, native_basis)) }
             })
     }));
     assert!(matches!(outcome, Ok(Err(_))));

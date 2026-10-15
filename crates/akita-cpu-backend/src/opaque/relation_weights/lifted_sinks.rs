@@ -126,6 +126,11 @@ impl<E: Field> EtWeightSink<E> for LiftedEtSink<'_, '_, E> {
                 constraint_scale,
             )),
             OpeningMethod::SubringCoefficientPacking { .. } => None,
+            OpeningMethod::FullRingScalarExtension { .. } => {
+                return Err(AkitaError::InvalidInput(
+                    "full-ring coefficient rows do not use legacy lifted sinks".into(),
+                ))
+            }
         };
         add_address_lanes(
             self.e_lanes.lanes_mut(physical_start, d_d)?,

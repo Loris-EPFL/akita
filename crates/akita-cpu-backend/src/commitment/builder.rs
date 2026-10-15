@@ -14,7 +14,7 @@ where
     F: Field + CanonicalEncoding,
     SP: CommitmentStatePolicy<F>,
 {
-    setup: akita_types::AkitaSetupDescriptor,
+    setup: akita_types::AkitaSetupIdentity,
     state_policy: SP,
     inner: Option<PreparedInnerCommitment<'a, F>>,
     outer: Option<PreparedOuterCommitment<'a, F>>,
@@ -29,8 +29,12 @@ where
 {
     /// Start a route builder bound to one explicit expanded setup.
     pub(crate) fn new(expanded: &AkitaExpandedSetup<F>, state_policy: SP) -> Self {
+        Self::with_identity(expanded.descriptor().clone().into(), state_policy)
+    }
+
+    pub(crate) fn with_identity(setup: akita_types::AkitaSetupIdentity, state_policy: SP) -> Self {
         Self {
-            setup: expanded.descriptor().clone(),
+            setup,
             state_policy,
             inner: None,
             outer: None,
@@ -165,6 +169,7 @@ where
         };
         Ok(CommitmentExecutor {
             setup: self.setup,
+            full_ring_roles: None,
             route,
             compression: self.compression,
             state_policy: self.state_policy,

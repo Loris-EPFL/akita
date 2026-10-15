@@ -245,7 +245,29 @@ where
         ));
     }
     params.validate_terminal_linf_cap(group.z_linf_cap)?;
-    decode_terminal_z_golomb_payload(&z_payload, group)?;
+    match params.response_codec {
+        akita_params::TerminalResponseCodec::GolombRice => {
+            decode_terminal_z_golomb_payload(&z_payload, group)?;
+        }
+        akita_params::TerminalResponseCodec::SignedFixedWidth {
+            bytes_per_coefficient,
+            coefficient_bound,
+        } => {
+            params.validate_opening_execution(2)?;
+            let codec = crate::full_ring_terminal::FullRingTerminalCodec::new(
+                params.blocks.live_blocks,
+                group.z_coords,
+                u128::MAX - 0xFFFF_A7F7 + 1,
+            )?;
+            if codec.bytes_per_coefficient() != bytes_per_coefficient
+                || codec.coefficient_bound() != coefficient_bound
+                || codec.payload_bytes() != group.z_payload_bytes
+            {
+                return Err(AkitaError::InvalidProof);
+            }
+            codec.decode(&z_payload)?;
+        }
+    }
     Ok(TerminalResponse {
         layout: scheduled_shape.layout.clone(),
         z_payloads: vec![z_payload],

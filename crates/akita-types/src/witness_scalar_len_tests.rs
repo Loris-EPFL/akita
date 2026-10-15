@@ -59,9 +59,15 @@ mod tests {
                 akita_params::CommitmentPayloadMode::Raw,
                 akita_params::CommitmentPayloadMode::Compressed,
             ] {
-                for ring_relation_mode in [
-                    akita_params::RingRelationMode::QuotientLift,
-                    akita_params::RingRelationMode::ReducedEvaluation,
+                for (ring_relation_mode, quotient_plan) in [
+                    (
+                        akita_params::RingRelationMode::QuotientLift,
+                        RelationQuotientPlan::quotient_lift(2).unwrap(),
+                    ),
+                    (
+                        akita_params::RingRelationMode::ReducedEvaluation,
+                        RelationQuotientPlan::ReducedEvaluation,
+                    ),
                 ] {
                     for num_polynomials in [1, 2, 5] {
                         for num_chunks in [1, 2, 4] {
@@ -76,14 +82,6 @@ mod tests {
                                     &opening_batch,
                                 )
                                 .expect("relation geometry");
-                            let quotient_plan = match ring_relation_mode {
-                                akita_params::RingRelationMode::QuotientLift => {
-                                    RelationQuotientPlan::quotient_lift(2).unwrap()
-                                }
-                                akita_params::RingRelationMode::ReducedEvaluation => {
-                                    RelationQuotientPlan::ReducedEvaluation
-                                }
-                            };
                             let materialized = WitnessLayout::new(
                                 &params,
                                 &opening_batch,

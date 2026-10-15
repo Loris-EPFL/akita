@@ -9,10 +9,12 @@ mod decompose_fold;
 pub(crate) mod eor;
 mod eor_plans;
 mod fold_kernels;
+pub(crate) mod full_ring;
 mod handles;
 pub(crate) mod lifecycle;
 mod openings;
 pub(crate) mod operation_plans;
+mod ordinary_projection;
 mod owned;
 mod owned_commit;
 mod owned_prefix;
@@ -71,7 +73,8 @@ pub use operation_plans::{
     SubringCoefficientPackingPartials, SubringCoefficientPackingPlan,
 };
 pub(crate) use operation_plans::{RingSwitchRelationPlan, ValidatedFoldRelationPlan};
-pub use owned::{CommitOutput, CommitmentHandle, CpuSource, SourceHandle};
+pub use owned::{CommitOutput, CommitmentHandle, CpuDecodedDenseComponentReader, CpuSource, SourceHandle};
+pub use ordinary_projection::{CpuOriginalMainComponentReader, CpuOriginalRamPlaneReader};
 pub(crate) use recursive::build_w_evals_compact;
 pub(crate) use recursive::OpaqueRecursiveWitness;
 pub(in crate::opaque) use recursive::{
@@ -121,7 +124,6 @@ where
         + 'static,
     <F as jolt_field::Unreduced>::Wide: From<F> + jolt_field::AdditiveGroup,
     E: jolt_field::ExtField<F>
-        + akita_types::FpExtEncoding<F>
         + akita_serialization::AkitaSerialize
         + jolt_field::Ring
         + jolt_field::Unreduced
@@ -135,7 +137,14 @@ where
         &self,
         witness_handle: Self::WitnessHandle,
     ) -> Result<(), AkitaError> {
-        self.validate_binding(&witness_handle.operation_binding())?;
+        let binding = witness_handle.operation_binding();
+        binding.validate_owner(
+            self.owner_id(),
+            self.owner().setup_digest(),
+            binding.fold_level(),
+        )?;
+        binding.scope_lease().validate_owner(self.owner())?;
+        binding.scope_lease().validate_reclamation(&binding)?;
         drop(witness_handle);
         Ok(())
     }
@@ -154,16 +163,7 @@ where
         + Sync
         + 'static,
     <F as jolt_field::Unreduced>::Wide: From<F> + jolt_field::AdditiveGroup,
-    E: jolt_field::ExtField<F>
-        + akita_types::FpExtEncoding<F>
-        + akita_serialization::AkitaSerialize
-        + jolt_field::Ring
-        + jolt_field::Unreduced
-        + jolt_field::Fold
-        + jolt_field::MulBaseUnreduced<F>
-        + Send
-        + Sync
-        + 'static,
+    E: jolt_field::ExtField<F> + 'static,
 {
     fn begin_recursive_witness(
         &self,
@@ -245,7 +245,16 @@ where
             .collect();
         crate::opaque::witness_build::begin_cpu_recursive_witness(
             self,
-            self.prepared()?,
+            if level.ring_relation_mode.is_exact_coefficient_rows() {
+                self.full_ring_prepared(
+                    self.full_ring_setup()?
+                        .descriptor()
+                        .level(binding.fold_level() as usize)?
+                        .opening,
+                )?
+            } else {
+                self.prepared()?
+            },
             binding,
             opening_bindings,
             prepared_opening_handles,
